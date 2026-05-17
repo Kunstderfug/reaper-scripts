@@ -21,11 +21,44 @@ local CLICK_PATTERN_BASE     = "CLICKDATA/$project_$region_120"
 local RENDER_PATTERN_BASE    = "AUDIO/$region/$project_$region_160"
 
 local EXT_SECTION            = "renderTempoSet"
-local MAX_USER_INPUT_FIELDS  = 16
-local REGION_PAGE_SIZE       = 16
 local GFX_DIRECT_SELECTED_ONLY = true
 local PENDING_REGION_ROWS_KEY = "pending_region_rows_v1"
+local SAVED_REGION_ROWS_KEY = "saved_region_rows_v1"
 local main
+
+local RENDER_NUMERIC_KEYS = {
+    "RENDER_SETTINGS",
+    "RENDER_BOUNDSFLAG",
+    "RENDER_CHANNELS",
+    "RENDER_SRATE",
+    "RENDER_STARTPOS",
+    "RENDER_ENDPOS",
+    "RENDER_TAILFLAG",
+    "RENDER_TAILMS",
+    "RENDER_ADDTOPROJ",
+    "RENDER_DITHER",
+    "RENDER_NORMALIZE",
+    "RENDER_NORMALIZE_TARGET",
+    "RENDER_BRICKWALL",
+    "RENDER_FADEIN",
+    "RENDER_FADEOUT",
+    "RENDER_FADEINSHAPE",
+    "RENDER_FADEOUTSHAPE",
+    "RENDER_FADELPF",
+    "RENDER_PADSTART",
+    "RENDER_PADEND",
+    "RENDER_TRIMSTART",
+    "RENDER_TRIMEND",
+    "RENDER_DELAY"
+}
+
+local RENDER_STRING_KEYS = {
+    "RENDER_FILE",
+    "RENDER_PATTERN",
+    "RENDER_EXTRAFILEDIR",
+    "RENDER_FORMAT",
+    "RENDER_FORMAT2"
+}
 
 local function log(msg)
     reaper.ShowConsoleMsg(tostring(msg) .. "\n")
@@ -51,10 +84,6 @@ local function parse_bool(str, default_if_empty)
     return (s == "y" or s == "yes" or s == "1" or s == "true")
 end
 
-local function bool_to_yn(value)
-    return value and "Y" or "N"
-end
-
 local function parse_list(input)
     local list = {}
     if not input or input == "" then
@@ -69,27 +98,6 @@ local function parse_list(input)
     end
 
     return list
-end
-
-local function split_string(input, separator)
-    local result = {}
-    if not input then
-        return result
-    end
-
-    local start = 1
-    while true do
-        local idx = string.find(input, separator, start, true)
-        if idx then
-            result[#result + 1] = string.sub(input, start, idx - 1)
-            start = idx + 1
-        else
-            result[#result + 1] = string.sub(input, start)
-            break
-        end
-    end
-
-    return result
 end
 
 local function trim_string(value)
@@ -325,17 +333,28 @@ local function with_tempo_suffix(pattern, tempo_str)
     return pattern .. "_" .. tempo_str
 end
 
--- This function is kept for reference but no longer used directly for rendering
-local function get_render_pattern(proj)
-    local ok, val = reaper.GetSetProjectInfo_String(proj, "RENDER_PATTERN", "", false)
-    if not ok then
-        return ""
-    end
-    return val
-end
-
 local function set_render_pattern(proj, pattern)
     reaper.GetSetProjectInfo_String(proj, "RENDER_PATTERN", pattern or "", true)
+end
+
+local function resolve_command(cmd_id)
+    if not cmd_id or cmd_id == 0 then
+        return nil
+    end
+
+    if type(cmd_id) == "string" then
+        local command = reaper.NamedCommandLookup(cmd_id)
+        if command and command ~= 0 then
+            return command
+        end
+        return nil
+    end
+
+    return cmd_id
+end
+
+local function command_is_configured(cmd_id)
+    return resolve_command(cmd_id) ~= nil
 end
 
 local function apply_preset(cmd_id, label)
@@ -348,13 +367,7 @@ local function apply_preset(cmd_id, label)
         return false
     end
 
-    local command
-    if type(cmd_id) == "string" then
-        command = reaper.NamedCommandLookup(cmd_id)
-    else
-        command = cmd_id
-    end
-
+    local command = resolve_command(cmd_id)
     if not command or command == 0 then
         reaper.ShowMessageBox(
             "Could not resolve command for " .. label .. " (" .. tostring(cmd_id) .. ").",
@@ -589,58 +602,6 @@ local function select_only_region(proj, region)
     end
 end
 
-local function sanitize_caption(text)
-    local out = text or ""
-    out = out:gsub(",", ";")
-    out = out:gsub("|", "/")
-    return out
-end
-
-local function format_region_tuple(base_tempo, start_tempo, step, end_tempo)
-    return string.format("%g/%g/%g/%g", base_tempo, start_tempo, step, end_tempo)
-end
-
-local function parse_region_tuple(value, fallback, previous)
-    local text = trim_string(value)
-    if text == "" then
-        return fallback.base_tempo, fallback.start_tempo, fallback.step, fallback.end_tempo, nil, "default"
-    end
-
-    local lower = text:lower()
-    if lower == "=" or lower == "copy" or lower == "copylast" or lower == "copy last" then
-        if previous then
-            return previous.base_tempo, previous.start_tempo, previous.step, previous.end_tempo, nil, "copy"
-        end
-        return fallback.base_tempo, fallback.start_tempo, fallback.step, fallback.end_tempo, nil, "default"
-    end
-
-    local a, b, c, d = text:match(
-        "^%s*([%-%d%.]+)%s*/%s*([%-%d%.]+)%s*/%s*([%-%d%.]+)%s*/%s*([%-%d%.]+)%s*$"
-    )
-    if not (a and b and c and d) then
-        return nil, nil, nil, nil, "expected base/start/step/end", nil
-    end
-
-    local base_tempo = tonumber(a)
-    local start_tempo = tonumber(b)
-    local step = tonumber(c)
-    local end_tempo = tonumber(d)
-    if not (base_tempo and start_tempo and step and end_tempo) then
-        return nil, nil, nil, nil, "all tuple values must be numeric", nil
-    end
-    if base_tempo <= 0 then
-        return nil, nil, nil, nil, "base tempo must be > 0", nil
-    end
-    if step == 0 then
-        return nil, nil, nil, nil, "step must be non-zero", nil
-    end
-    if (end_tempo - start_tempo) * step < 0 then
-        return nil, nil, nil, nil, "step direction does not reach end tempo", nil
-    end
-
-    return base_tempo, start_tempo, step, end_tempo, nil, "manual"
-end
-
 local function prompt_per_region_settings(
     proj,
     regions,
@@ -723,12 +684,30 @@ local function prompt_per_region_settings(
         }
     end
 
-    local function apply_entry(row, entry)
-        row.base_tempo = entry.base_tempo
+    local function apply_entry_except_base(row, entry)
         row.start_tempo = entry.start_tempo
         row.end_tempo = entry.end_tempo
         row.step = entry.step
         row.render_click = entry.render_click
+    end
+
+    local function row_storage_key(row)
+        return table.concat({
+            tostring(row.number or -1),
+            string.format("%.9f", row.pos or 0),
+            string.format("%.9f", row.rgnend or 0),
+            sanitize_name_for_storage(row.name):lower()
+        }, "|")
+    end
+
+    local function validate_all_rows()
+        for i = 1, #rows do
+            local ok, err = validate_row(rows[i])
+            if not ok then
+                return false, string.format("Row %d invalid: %s", i, err)
+            end
+        end
+        return true, nil
     end
 
     local function copy_last_to_row(row_idx)
@@ -736,8 +715,66 @@ local function prompt_per_region_settings(
             set_message("Nothing to copy yet. Edit one row first.")
             return
         end
-        apply_entry(rows[row_idx], last_entry)
-        set_message(string.format("Copied last values to row %d", row_idx))
+        apply_entry_except_base(rows[row_idx], last_entry)
+        set_message(string.format("Copied last values to row %d; base unchanged", row_idx))
+    end
+
+    local function copy_last_to_all_rows()
+        if not last_entry then
+            set_message("Nothing to copy yet. Edit one row first.")
+            return
+        end
+
+        for i = 1, #rows do
+            apply_entry_except_base(rows[i], last_entry)
+        end
+        set_message(string.format("Copied last values to all %d rows; bases unchanged", #rows))
+    end
+
+    local function save_piece_settings()
+        local ok, err = validate_all_rows()
+        if not ok then
+            set_message(err)
+            return
+        end
+
+        reaper.SetProjExtState(proj, EXT_SECTION, SAVED_REGION_ROWS_KEY, serialize_region_rows(rows))
+        set_message(string.format("Saved settings for %d rows", #rows))
+    end
+
+    local function load_piece_settings()
+        local has_saved, blob = reaper.GetProjExtState(proj, EXT_SECTION, SAVED_REGION_ROWS_KEY)
+        if has_saved ~= 1 or not blob or blob == "" then
+            set_message("No saved settings for this project.")
+            return
+        end
+
+        local saved_rows = deserialize_region_rows(blob)
+        if #saved_rows == 0 then
+            set_message("Saved settings are empty.")
+            return
+        end
+
+        local by_key = {}
+        for i = 1, #saved_rows do
+            by_key[row_storage_key(saved_rows[i])] = saved_rows[i]
+        end
+
+        local loaded = 0
+        for i = 1, #rows do
+            local saved = by_key[row_storage_key(rows[i])]
+            if saved then
+                apply_entry_except_base(rows[i], saved)
+                loaded = loaded + 1
+            end
+        end
+
+        if loaded > 0 then
+            last_entry = snapshot_entry(rows[selected_row])
+            set_message(string.format("Loaded settings for %d rows; bases unchanged", loaded))
+        else
+            set_message("No saved rows matched current regions.")
+        end
     end
 
     local function draw_button(x, y, w, h, label)
@@ -833,6 +870,9 @@ local function prompt_per_region_settings(
         local cancel_hover = draw_button(bx + (btn_w + gap), top_y, btn_w, btn_h, "Cancel")
         local copy_hover = draw_button(bx + (btn_w + gap) * 2, top_y, 220, btn_h, "Copy Last To Selected")
         local fill_hover = draw_button(bx + (btn_w + gap) * 2 + 232, top_y, 220, btn_h, "Fill Down From Selected")
+        local copy_all_hover = draw_button(bx + (btn_w + gap) * 2 + 464, top_y, 140, btn_h, "Copy To All")
+        local save_hover = draw_button(bx + (btn_w + gap) * 2 + 616, top_y, 64, btn_h, "Save")
+        local load_hover = draw_button(bx + (btn_w + gap) * 2 + 692, top_y, 64, btn_h, "Load")
 
         gfx.set(1, 1, 1, 1)
         gfx.x = 16
@@ -957,14 +997,30 @@ local function prompt_per_region_settings(
             elseif copy_hover then
                 copy_last_to_row(selected_row)
             elseif fill_hover then
-                if not last_entry then
-                    set_message("Nothing to fill yet. Edit one row first.")
+                local valid, err = validate_row(rows[selected_row])
+                if not valid then
+                    set_message(string.format("Selected row invalid: %s", err))
+                elseif selected_row >= #rows then
+                    set_message("No rows below selected row.")
                 else
+                    local selected_entry = snapshot_entry(rows[selected_row])
                     for i = selected_row + 1, #rows do
-                        apply_entry(rows[i], last_entry)
+                        apply_entry_except_base(rows[i], selected_entry)
                     end
-                    set_message(string.format("Filled rows %d-%d from last values", selected_row + 1, #rows))
+                    last_entry = selected_entry
+                    set_message(string.format(
+                        "Filled rows %d-%d from row %d; bases unchanged",
+                        selected_row + 1,
+                        #rows,
+                        selected_row
+                    ))
                 end
+            elseif copy_all_hover then
+                copy_last_to_all_rows()
+            elseif save_hover then
+                save_piece_settings()
+            elseif load_hover then
+                load_piece_settings()
             else
                 local data_top_y = top_y + 74 + row_h
                 if my >= data_top_y and my < data_top_y + visible_rows * row_h then
@@ -1021,21 +1077,46 @@ local function prompt_per_region_settings(
     return nil, "pending"
 end
 
-local function capture_render_bounds_state(proj)
-    return {
-        bounds_flag = reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 0, false),
-        start_pos = reaper.GetSetProjectInfo(proj, "RENDER_STARTPOS", 0, false),
-        end_pos = reaper.GetSetProjectInfo(proj, "RENDER_ENDPOS", 0, false)
+local function capture_render_state(proj)
+    local state = {
+        numeric = {},
+        strings = {}
     }
+
+    for i = 1, #RENDER_NUMERIC_KEYS do
+        local key = RENDER_NUMERIC_KEYS[i]
+        state.numeric[key] = reaper.GetSetProjectInfo(proj, key, 0, false)
+    end
+
+    for i = 1, #RENDER_STRING_KEYS do
+        local key = RENDER_STRING_KEYS[i]
+        local ok, value = reaper.GetSetProjectInfo_String(proj, key, "", false)
+        if ok then
+            state.strings[key] = value or ""
+        end
+    end
+
+    return state
 end
 
-local function restore_render_bounds_state(proj, state)
+local function restore_render_state(proj, state)
     if not state then
         return
     end
-    reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", state.bounds_flag or 0, true)
-    reaper.GetSetProjectInfo(proj, "RENDER_STARTPOS", state.start_pos or 0, true)
-    reaper.GetSetProjectInfo(proj, "RENDER_ENDPOS", state.end_pos or 0, true)
+
+    for i = 1, #RENDER_NUMERIC_KEYS do
+        local key = RENDER_NUMERIC_KEYS[i]
+        if state.numeric[key] ~= nil then
+            reaper.GetSetProjectInfo(proj, key, state.numeric[key], true)
+        end
+    end
+
+    for i = 1, #RENDER_STRING_KEYS do
+        local key = RENDER_STRING_KEYS[i]
+        if state.strings[key] ~= nil then
+            reaper.GetSetProjectInfo_String(proj, key, state.strings[key], true)
+        end
+    end
 end
 
 main = function()
@@ -1105,12 +1186,14 @@ main = function()
 
     local click_track = find_click_track(proj)
     local per_region_configs = nil
+    local region_selection_scope = "all regions"
     local pending_rows = nil
     do
         local has_pending, pending_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY)
         if has_pending == 1 and pending_blob and pending_blob ~= "" then
             pending_rows = deserialize_region_rows(pending_blob)
             reaper.SetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY, "")
+            region_selection_scope = string.format("queued grid rows (%d)", #pending_rows)
         end
     end
 
@@ -1126,14 +1209,17 @@ main = function()
                         filtered[#filtered + 1] = regions[i]
                     end
                 end
-                regions = filtered
+                if #filtered > 0 then
+                    region_selection_scope = string.format("selected regions (%d of %d)", #filtered, #regions)
+                    regions = filtered
+                else
+                    region_selection_scope = string.format("all regions (%d; none selected)", #regions)
+                end
+            else
+                region_selection_scope = string.format("all regions (%d)", #regions)
             end
             if #regions == 0 then
-                if per_region_selected_only then
-                    reaper.ShowMessageBox("No selected regions found. Select regions in Region/Marker Manager first.", "Error", 0)
-                else
-                    reaper.ShowMessageBox("No regions found in the project.", "Error", 0)
-                end
+                reaper.ShowMessageBox("No regions found in the project.", "Error", 0)
                 return
             end
             local configs, err = prompt_per_region_settings(
@@ -1162,8 +1248,7 @@ main = function()
     if force_region_base then
         region_starts = collect_region_start_positions(proj, region_name_filter)
     end
-    local original_pattern = get_render_pattern(proj)
-    local original_render_bounds = capture_render_bounds_state(proj)
+    local original_render_state = capture_render_state(proj)
     local original_region_selection = capture_region_selection(proj)
 
     local original_click_mute = nil
@@ -1181,6 +1266,31 @@ main = function()
         end
     end
 
+    local function restore_original_state()
+        restore_tempo_map(proj, markers_original)
+        restore_render_state(proj, original_render_state)
+        restore_region_selection(proj, original_region_selection)
+
+        if click_track and original_click_mute ~= nil then
+            reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
+        end
+
+        reaper.Main_OnCommand(40297, 0)
+        for i = 1, #prev_sel do
+            reaper.SetTrackSelected(prev_sel[i], true)
+        end
+
+        reaper.UpdateArrange()
+    end
+
+    local function format_traceback(err)
+        if debug and debug.traceback then
+            return debug.traceback(tostring(err), 2)
+        end
+        return tostring(err)
+    end
+
+    local ok, err = xpcall(function()
     reaper.ShowConsoleMsg("")
     log("=== renderTempoSet - queue with CLICK ===")
     log(string.format("Original base tempo: %g (REAPER: %g)", base_tempo, base_tempo_actual))
@@ -1202,7 +1312,7 @@ main = function()
     ))
     log("Render Click Files: " .. (render_click and "YES" or "NO"))
     log("Per-Region Settings Mode: " .. (per_region_mode and "YES" or "NO"))
-    log("Per-Region Selected Only: " .. (per_region_selected_only and "YES" or "NO"))
+    log("Region Selection Scope: " .. region_selection_scope)
     log("Force Base Tempo At Region Starts: " .. (force_region_base and "YES" or "NO"))
     if force_region_base then
         log(string.format("Region filter: %s", region_name_filter ~= "" and region_name_filter or "<all regions>"))
@@ -1218,8 +1328,13 @@ main = function()
 
         local queued_click_count = 0
         local queued_regular_count = 0
+        local stop_queue = false
 
         for i = 1, #per_region_configs do
+            if stop_queue then
+                break
+            end
+
             local cfg = per_region_configs[i]
             local base_actual = cfg.base_tempo * tempo_multiplier
             select_only_region(proj, cfg)
@@ -1227,7 +1342,7 @@ main = function()
             if cfg.render_click then
                 if not click_track then
                     log(string.format("R%d '%s': SKIP CLICK (no CLICKTRACK found).", i, cfg.name))
-                elseif CMD_APPLY_GPHIL_CLICK == 0 then
+                elseif not command_is_configured(CMD_APPLY_GPHIL_CLICK) then
                     log(string.format("R%d '%s': SKIP CLICK (preset missing).", i, cfg.name))
                 else
                     restore_tempo_map(proj, markers_original)
@@ -1239,6 +1354,7 @@ main = function()
                         reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 0)
                     end
 
+                    restore_render_state(proj, original_render_state)
                     if apply_preset(CMD_APPLY_GPHIL_CLICK, "GPHIL_CLICK") then
                         local base_suffix = math.floor(cfg.base_tempo + 0.5)
                         local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, tostring(base_suffix))
@@ -1268,8 +1384,9 @@ main = function()
                 end
             end
 
-            if CMD_APPLY_GPHIL_RENDER == 0 then
+            if not command_is_configured(CMD_APPLY_GPHIL_RENDER) then
                 log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
+                stop_queue = true
                 break
             end
 
@@ -1283,13 +1400,16 @@ main = function()
                 ensure_tempo_marker_at_time(proj, cfg.pos, base_actual)
                 local markers_for_scale = capture_tempo_map(proj)
                 scale_tempo_map(proj, markers_for_scale, factor)
+                ensure_tempo_marker_at_time(proj, cfg.pos, target_actual)
 
                 if click_track and original_click_mute ~= nil then
                     reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
                 end
 
+                restore_render_state(proj, original_render_state)
                 if not apply_preset(CMD_APPLY_GPHIL_RENDER, "GPHIL_RENDER") then
                     log("Stopping: failed to apply GPHIL_RENDER preset.")
+                    stop_queue = true
                     break
                 end
 
@@ -1324,7 +1444,7 @@ main = function()
         if render_click then
             if not click_track then
                 log("SKIP CLICK: no CLICKTRACK found.")
-            elseif CMD_APPLY_GPHIL_CLICK == 0 then
+            elseif not command_is_configured(CMD_APPLY_GPHIL_CLICK) then
                 log("SKIP CLICK: GPHIL_CLICK preset action not configured.")
             else
                 restore_tempo_map(proj, markers_original)
@@ -1341,6 +1461,7 @@ main = function()
                     reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 0)
                 end
 
+                restore_render_state(proj, original_render_state)
                 if apply_preset(CMD_APPLY_GPHIL_CLICK, "GPHIL_CLICK") then
                     local base_suffix = math.floor(base_tempo + 0.5)
                     local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, tostring(base_suffix))
@@ -1368,12 +1489,11 @@ main = function()
                 end
 
                 restore_tempo_map(proj, markers_original)
-                set_render_pattern(proj, original_pattern)
             end
         end
 
         -- 2) Regular renders with GPHIL_RENDER
-        if CMD_APPLY_GPHIL_RENDER == 0 then
+        if not command_is_configured(CMD_APPLY_GPHIL_RENDER) then
             log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
         else
             local tempo = start_tempo
@@ -1391,11 +1511,15 @@ main = function()
 
                 local markers_for_scale = capture_tempo_map(proj)
                 scale_tempo_map(proj, markers_for_scale, factor)
+                if force_region_base and #region_starts > 0 then
+                    enforce_region_start_base_tempo(proj, region_starts, target_tempo_actual)
+                end
 
                 if click_track and original_click_mute ~= nil then
                     reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
                 end
 
+                restore_render_state(proj, original_render_state)
                 if not apply_preset(CMD_APPLY_GPHIL_RENDER, "GPHIL_RENDER") then
                     log("Stopping: failed to apply GPHIL_RENDER preset.")
                     break
@@ -1423,24 +1547,21 @@ main = function()
         end
     end
 
-    -- Restore original state
-    restore_tempo_map(proj, markers_original)
-    set_render_pattern(proj, original_pattern)
-    restore_render_bounds_state(proj, original_render_bounds)
-    restore_region_selection(proj, original_region_selection)
+    end, format_traceback)
 
-    if click_track and original_click_mute ~= nil then
-        reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
-    end
-
-
-    reaper.Main_OnCommand(40297, 0)
-    for i = 1, #prev_sel do
-        reaper.SetTrackSelected(prev_sel[i], true)
-    end
-
-    reaper.UpdateArrange()
+    restore_original_state()
     reaper.Undo_EndBlock("renderTempoSet - queue with CLICK", -1)
+
+    if not ok then
+        log("--------------------------------------")
+        log("ERROR: " .. tostring(err))
+        reaper.ShowMessageBox(
+            "renderTempoSet stopped after an error. Original project state was restored.\n\n" .. tostring(err),
+            "Error",
+            0
+        )
+        return
+    end
 
     log("--------------------------------------")
     log("Done. Queue entries added.")
