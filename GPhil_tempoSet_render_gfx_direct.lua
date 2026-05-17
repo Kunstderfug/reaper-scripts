@@ -24,9 +24,15 @@ local RENDER_PATTERN_BASE    = "AUDIO/$region/$project_$region_160"
 
 local EXT_SECTION            = "renderTempoSet"
 local GFX_DIRECT_SELECTED_ONLY = true
+local PER_REGION_DEFAULT_STEP = 5
+local GROUP_KEY_SCALE = 1000000
 local PENDING_REGION_ROWS_KEY = "pending_region_rows_v1"
+local PENDING_QUEUE_OPTIONS_KEY = "pending_queue_options_v1"
 local SAVED_REGION_ROWS_KEY = "saved_region_rows_v1"
 local main
+
+local TEMPO_MARKER_FLAG_METRONOME_PATTERN = 8
+local TEMPO_MARKER_FLAGS = { 1, 2, 4, 8, 16 }
 
 local RENDER_NUMERIC_KEYS = {
     "RENDER_SETTINGS",
@@ -109,6 +115,26 @@ local function trim_string(value)
     return (value:match("^%s*(.-)%s*$") or "")
 end
 
+local function numeric_group_key(value)
+    if not value then
+        return "nil"
+    end
+
+    local scaled = value * GROUP_KEY_SCALE
+    if scaled >= 0 then
+        return tostring(math.floor(scaled + 0.5))
+    end
+    return tostring(math.ceil(scaled - 0.5))
+end
+
+local function tempo_suffix_value(tempo)
+    return tostring(math.floor((tempo or 0) + 0.5))
+end
+
+local function row_is_enabled(row)
+    return row == nil or row.enabled ~= false
+end
+
 local function sanitize_name_for_storage(name)
     local text = name or ""
     text = text:gsub("[\t\r\n]", " ")
@@ -129,7 +155,8 @@ local function serialize_region_rows(rows)
             tostring(row.start_tempo or 0),
             tostring(row.step or 0),
             tostring(row.end_tempo or 0),
-            row.render_click and "1" or "0"
+            row.render_click and "1" or "0",
+            row_is_enabled(row) and "1" or "0"
         }, "\t")
     end
     return table.concat(out, "\n")
@@ -161,7 +188,8 @@ local function deserialize_region_rows(blob)
                 start_tempo = tonumber(cols[7]) or 0,
                 step = tonumber(cols[8]) or 0,
                 end_tempo = tonumber(cols[9]) or 0,
-                render_click = cols[10] == "1"
+                render_click = cols[10] == "1",
+                enabled = cols[11] ~= "0"
             }
         end
     end
@@ -169,8 +197,35 @@ local function deserialize_region_rows(blob)
     return rows
 end
 
-local function queue_pending_rows_and_continue(proj, rows)
+local function serialize_queue_options(options)
+    options = options or {}
+    return table.concat({
+        "skip_existing=" .. (options.skip_existing and "1" or "0")
+    }, "\n")
+end
+
+local function deserialize_queue_options(blob)
+    local options = {
+        skip_existing = false
+    }
+
+    if not blob or blob == "" then
+        return options
+    end
+
+    for line in blob:gmatch("([^\n]+)") do
+        local key, value = line:match("^([^=]+)=(.*)$")
+        if key == "skip_existing" then
+            options.skip_existing = value == "1"
+        end
+    end
+
+    return options
+end
+
+local function queue_pending_rows_and_continue(proj, rows, options)
     reaper.SetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY, serialize_region_rows(rows))
+    reaper.SetProjExtState(proj, EXT_SECTION, PENDING_QUEUE_OPTIONS_KEY, serialize_queue_options(options))
     if main then
         reaper.defer(main)
     end
@@ -251,6 +306,69 @@ local function save_last_params(
     )
 end
 
+local function flag_is_set(flags, flag)
+    if not flags then
+        return false
+    end
+    return math.floor(flags / flag) % 2 == 1
+end
+
+local function get_tempo_marker_flags(proj, marker_index)
+    if not reaper.GetSetTempoTimeSigMarkerFlag then
+        return nil
+    end
+    return reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, 0, false)
+end
+
+local function set_tempo_marker_flags(proj, marker_index, flags)
+    if not flags or not reaper.GetSetTempoTimeSigMarkerFlag then
+        return
+    end
+
+    for i = 1, #TEMPO_MARKER_FLAGS do
+        local flag = TEMPO_MARKER_FLAGS[i]
+        reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, flag, flag_is_set(flags, flag))
+    end
+end
+
+local function get_metronome_pattern(proj, timepos)
+    if not reaper.TimeMap_GetMetronomePattern then
+        return nil
+    end
+
+    local _, pattern = reaper.TimeMap_GetMetronomePattern(proj, timepos, "EXTENDED")
+    if pattern and pattern ~= "" then
+        return pattern
+    end
+    return nil
+end
+
+local function set_metronome_pattern(proj, timepos, pattern)
+    if not pattern or pattern == "" or not reaper.TimeMap_GetMetronomePattern then
+        return
+    end
+    reaper.TimeMap_GetMetronomePattern(proj, timepos, "SET:" .. pattern)
+end
+
+local function find_tempo_marker_at_time(proj, timepos)
+    local eps = 0.0000005
+    local cnt = reaper.CountTempoTimeSigMarkers(proj)
+    for i = 0, cnt - 1 do
+        local retval, marker_timepos = reaper.GetTempoTimeSigMarker(proj, i)
+        if retval and math.abs(marker_timepos - timepos) <= eps then
+            return i
+        end
+    end
+    return nil
+end
+
+local function apply_tempo_marker_metadata(proj, marker_index, timepos, flags, metronome_pattern)
+    if flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN) then
+        set_metronome_pattern(proj, timepos, metronome_pattern)
+    end
+    set_tempo_marker_flags(proj, marker_index, flags)
+end
+
 local function capture_tempo_map(proj)
     local list = {}
     local cnt = reaper.CountTempoTimeSigMarkers(proj)
@@ -258,6 +376,7 @@ local function capture_tempo_map(proj)
         local retval, timepos, measurepos, beatpos, bpm, timesig_num, timesig_denom,
         lineartempo, unk = reaper.GetTempoTimeSigMarker(proj, i)
         if retval then
+            local flags = get_tempo_marker_flags(proj, i)
             list[#list + 1] = {
                 timepos = timepos,
                 measurepos = measurepos,
@@ -266,7 +385,11 @@ local function capture_tempo_map(proj)
                 timesig_num = timesig_num,
                 timesig_denom = timesig_denom,
                 lineartempo = lineartempo,
-                unk = unk
+                unk = unk,
+                flags = flags,
+                metronome_pattern = flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN)
+                    and get_metronome_pattern(proj, timepos)
+                    or nil
             }
         end
     end
@@ -291,6 +414,14 @@ local function restore_tempo_map(proj, markers)
             m.timesig_denom,
             m.lineartempo
         )
+    end
+
+    for i = 1, #markers do
+        local m = markers[i]
+        local marker_index = find_tempo_marker_at_time(proj, m.timepos)
+        if marker_index then
+            apply_tempo_marker_metadata(proj, marker_index, m.timepos, m.flags, m.metronome_pattern)
+        end
     end
 end
 
@@ -323,6 +454,15 @@ local function scale_tempo_map(proj, markers_original, factor)
             m.timesig_denom,
             m.lineartempo
         )
+    end
+
+    for i = 1, #markers_original do
+        local m = markers_original[i]
+        local new_timepos = m.timepos * time_scale
+        local marker_index = find_tempo_marker_at_time(proj, new_timepos)
+        if marker_index then
+            apply_tempo_marker_metadata(proj, marker_index, new_timepos, m.flags, m.metronome_pattern)
+        end
     end
 end
 
@@ -461,6 +601,10 @@ local function ensure_tempo_marker_at_time(proj, timepos, bpm)
             if bpm and bpm > 0 then
                 keep_bpm = bpm
             end
+            local flags = get_tempo_marker_flags(proj, i)
+            local metronome_pattern = flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN)
+                and get_metronome_pattern(proj, marker_timepos)
+                or nil
 
             reaper.SetTempoTimeSigMarker(
                 proj,
@@ -473,6 +617,7 @@ local function ensure_tempo_marker_at_time(proj, timepos, bpm)
                 timesig_denom,
                 lineartempo
             )
+            apply_tempo_marker_metadata(proj, i, marker_timepos, flags, metronome_pattern)
             return true
         end
     end
@@ -594,22 +739,246 @@ local function clear_all_region_selection(proj)
     end
 end
 
-local function select_only_region(proj, region)
+local function select_regions(proj, regions)
     clear_all_region_selection(proj)
-    if region and region.internal_index ~= nil then
-        local region_or_marker = reaper.GetRegionOrMarker(proj, region.internal_index, "")
-        if region_or_marker then
-            reaper.SetRegionOrMarkerInfo_Value(proj, region_or_marker, "B_UISEL", 1)
+    for i = 1, #regions do
+        local region = regions[i]
+        if region and region.internal_index ~= nil then
+            local region_or_marker = reaper.GetRegionOrMarker(proj, region.internal_index, "")
+            if region_or_marker then
+                reaper.SetRegionOrMarkerInfo_Value(proj, region_or_marker, "B_UISEL", 1)
+            end
         end
     end
+end
+
+local function add_region_to_group(group, cfg, row_index)
+    group.regions[#group.regions + 1] = cfg
+    group.row_indexes[#group.row_indexes + 1] = row_index
+end
+
+local function row_list_label(group)
+    local labels = {}
+    for i = 1, #group.row_indexes do
+        labels[#labels + 1] = "R" .. tostring(group.row_indexes[i])
+    end
+    return table.concat(labels, ", ")
+end
+
+local function region_count_label(count)
+    if count == 1 then
+        return "1 region"
+    end
+    return tostring(count) .. " regions"
+end
+
+local build_per_region_queue_groups
+
+local function regular_row_group_key(row)
+    if not row_is_enabled(row) then
+        return "disabled"
+    end
+
+    return table.concat({
+        numeric_group_key(row.base_tempo),
+        numeric_group_key(row.start_tempo),
+        numeric_group_key(row.end_tempo),
+        numeric_group_key(row.step)
+    }, "|")
+end
+
+local function assign_regular_row_group_ids(rows)
+    local by_key = {}
+    local next_id = 1
+    local ids = {}
+
+    for i = 1, #rows do
+        local row = rows[i]
+        if row_is_enabled(row) then
+            local key = regular_row_group_key(row)
+            if not by_key[key] then
+                by_key[key] = next_id
+                next_id = next_id + 1
+            end
+            ids[i] = by_key[key]
+        else
+            ids[i] = nil
+        end
+    end
+
+    return ids
+end
+
+local function count_enabled_rows(rows)
+    local count = 0
+    for i = 1, #rows do
+        if row_is_enabled(rows[i]) then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function count_group_regions(groups)
+    local count = 0
+    for i = 1, #groups do
+        count = count + #groups[i].regions
+    end
+    return count
+end
+
+local function describe_group(group)
+    return string.format(
+        "%s (%s), base %g, target %s",
+        row_list_label(group),
+        region_count_label(#group.regions),
+        group.base_tempo or 0,
+        group.target_tempo and tostring(group.target_tempo) or "click"
+    )
+end
+
+local function build_queue_summary(rows, tempo_multiplier)
+    local click_groups, regular_groups = build_per_region_queue_groups(rows, tempo_multiplier)
+    local enabled_count = count_enabled_rows(rows)
+    local click_region_count = count_group_regions(click_groups)
+    local regular_region_count = count_group_regions(regular_groups)
+    local skipped_count = #rows - enabled_count
+    local ungrouped_entries = click_region_count + regular_region_count
+    local grouped_entries = #click_groups + #regular_groups
+    local saved_entries = ungrouped_entries - grouped_entries
+    if saved_entries < 0 then
+        saved_entries = 0
+    end
+
+    local lines = {
+        string.format("Enabled rows: %d of %d", enabled_count, #rows),
+        string.format("Skipped rows: %d", skipped_count),
+        string.format(
+            "Regular: %d queue project(s), %d region render(s)",
+            #regular_groups,
+            regular_region_count
+        ),
+        string.format(
+            "Click: %d queue project(s), %d region render(s)",
+            #click_groups,
+            click_region_count
+        ),
+        string.format("Grouping avoids %d separate queue entr%s.", saved_entries, saved_entries == 1 and "y" or "ies"),
+        "Grouping rule: same base tempo + same target tempo."
+    }
+
+    return {
+        click_groups = click_groups,
+        regular_groups = regular_groups,
+        enabled_count = enabled_count,
+        click_region_count = click_region_count,
+        regular_region_count = regular_region_count,
+        grouped_entries = grouped_entries,
+        summary_text = table.concat(lines, "\n")
+    }
+end
+
+local function log_queue_plan(rows, tempo_multiplier, title)
+    local plan = build_queue_summary(rows, tempo_multiplier)
+    log(title or "Queue plan")
+    log(plan.summary_text)
+    if #plan.click_groups > 0 then
+        log("Click groups:")
+        for i = 1, #plan.click_groups do
+            log(string.format("  C%d: %s", i, describe_group(plan.click_groups[i])))
+        end
+    end
+    if #plan.regular_groups > 0 then
+        log("Regular groups:")
+        for i = 1, #plan.regular_groups do
+            log(string.format("  G%d: %s", i, describe_group(plan.regular_groups[i])))
+        end
+    end
+    return plan
+end
+
+build_per_region_queue_groups = function(configs, tempo_multiplier)
+    local click_groups = {}
+    local click_by_key = {}
+    local regular_groups = {}
+    local regular_by_key = {}
+
+    for row_index = 1, #configs do
+        local cfg = configs[row_index]
+        if row_is_enabled(cfg) and cfg and cfg.base_tempo and cfg.base_tempo > 0 and cfg.step and cfg.step ~= 0 then
+            cfg.queue_row_index = row_index
+            local base_actual = cfg.base_tempo * tempo_multiplier
+            local base_suffix = tempo_suffix_value(cfg.base_tempo)
+
+            if cfg.render_click then
+                local click_key = table.concat({
+                    numeric_group_key(base_actual),
+                    base_suffix
+                }, "|")
+                local click_group = click_by_key[click_key]
+                if not click_group then
+                    click_group = {
+                        base_tempo = cfg.base_tempo,
+                        base_actual = base_actual,
+                        base_suffix = base_suffix,
+                        regions = {},
+                        row_indexes = {}
+                    }
+                    click_by_key[click_key] = click_group
+                    click_groups[#click_groups + 1] = click_group
+                end
+                add_region_to_group(click_group, cfg, row_index)
+            end
+
+            local tempo = cfg.start_tempo
+            local guard = 0
+            while (cfg.step > 0 and tempo <= cfg.end_tempo) or (cfg.step < 0 and tempo >= cfg.end_tempo) do
+                local target_tempo = tempo
+                local target_actual = target_tempo * tempo_multiplier
+                local factor = target_actual / base_actual
+                local tempo_display = tempo_suffix_value(target_tempo)
+                local regular_key = table.concat({
+                    numeric_group_key(base_actual),
+                    numeric_group_key(target_actual),
+                    tempo_display
+                }, "|")
+                local regular_group = regular_by_key[regular_key]
+                if not regular_group then
+                    regular_group = {
+                        base_tempo = cfg.base_tempo,
+                        base_actual = base_actual,
+                        target_tempo = target_tempo,
+                        target_actual = target_actual,
+                        factor = factor,
+                        tempo_display = tempo_display,
+                        regions = {},
+                        row_indexes = {}
+                    }
+                    regular_by_key[regular_key] = regular_group
+                    regular_groups[#regular_groups + 1] = regular_group
+                end
+                add_region_to_group(regular_group, cfg, row_index)
+
+                tempo = tempo + cfg.step
+                guard = guard + 1
+                if guard > 10000 then
+                    break
+                end
+            end
+        end
+    end
+
+    return click_groups, regular_groups
+end
+
+local function default_per_region_tempo_range(base_tempo)
+    local step = PER_REGION_DEFAULT_STEP
+    return base_tempo - step * 4, step, base_tempo + step * 4
 end
 
 local function prompt_per_region_settings(
     proj,
     regions,
-    default_start,
-    default_step,
-    default_end,
     tempo_multiplier,
     default_click
 )
@@ -618,6 +987,7 @@ local function prompt_per_region_settings(
         local region = regions[i]
         local base_actual = reaper.TimeMap2_GetDividedBpmAtTime(proj, region.pos)
         local base_tempo = base_actual / tempo_multiplier
+        local start_tempo, step, end_tempo = default_per_region_tempo_range(base_tempo)
         rows[i] = {
             internal_index = region.internal_index,
             marker = region.marker,
@@ -626,21 +996,22 @@ local function prompt_per_region_settings(
             name = region.name,
             number = region.number,
             base_tempo = base_tempo,
-            start_tempo = default_start,
-            step = default_step,
-            end_tempo = default_end,
-            render_click = default_click
+            start_tempo = start_tempo,
+            step = step,
+            end_tempo = end_tempo,
+            render_click = default_click,
+            enabled = true
         }
     end
 
     local title = string.format("Region Tempo Grid (%d regions)", #rows)
-    local win_w = 1100
-    local win_h = 720
+    local win_w = 1240
+    local win_h = 760
     gfx.init(title, win_w, win_h)
     gfx.setfont(1, "Arial", 16)
 
     local selected_row = 1
-    local selected_col = 2
+    local selected_col = 4
     local scroll_row = 1
     local last_left_down = false
     local last_click_time = 0
@@ -710,6 +1081,99 @@ local function prompt_per_region_settings(
             end
         end
         return true, nil
+    end
+
+    local function validate_enabled_rows()
+        local enabled_count = 0
+        for i = 1, #rows do
+            if row_is_enabled(rows[i]) then
+                enabled_count = enabled_count + 1
+                local ok, err = validate_row(rows[i])
+                if not ok then
+                    return false, string.format("Row %d invalid: %s", i, err)
+                end
+            end
+        end
+
+        if enabled_count == 0 then
+            return false, "No rows are enabled."
+        end
+
+        return true, nil
+    end
+
+    local function sort_rows_for_queue()
+        table.sort(rows, function(a, b)
+            if row_is_enabled(a) ~= row_is_enabled(b) then
+                return row_is_enabled(a)
+            end
+            if numeric_group_key(a.base_tempo) ~= numeric_group_key(b.base_tempo) then
+                return (a.base_tempo or 0) < (b.base_tempo or 0)
+            end
+            if numeric_group_key(a.start_tempo) ~= numeric_group_key(b.start_tempo) then
+                return (a.start_tempo or 0) < (b.start_tempo or 0)
+            end
+            if numeric_group_key(a.end_tempo) ~= numeric_group_key(b.end_tempo) then
+                return (a.end_tempo or 0) < (b.end_tempo or 0)
+            end
+            if numeric_group_key(a.step) ~= numeric_group_key(b.step) then
+                return (a.step or 0) < (b.step or 0)
+            end
+            if (a.pos or 0) ~= (b.pos or 0) then
+                return (a.pos or 0) < (b.pos or 0)
+            end
+            return (a.name or "") < (b.name or "")
+        end)
+
+        selected_row = math.min(selected_row, #rows)
+        scroll_row = math.min(scroll_row, math.max(1, #rows))
+        set_message("Sorted rows by On, Base, Min, Max, Step.")
+    end
+
+    local function confirm_queue_options()
+        local ok, err = validate_enabled_rows()
+        if not ok then
+            set_message(err)
+            return nil
+        end
+
+        local plan = build_queue_summary(rows, tempo_multiplier)
+        local preview_response = reaper.ShowMessageBox(
+            plan.summary_text .. "\n\nPress OK to continue to existing-file handling.",
+            "Queue Preview",
+            1
+        )
+        if preview_response ~= 1 then
+            set_message("Queue cancelled.")
+            return nil
+        end
+
+        local existing_response = reaper.ShowMessageBox(
+            "Existing-file handling:\n\nYes = queue all planned groups\nNo = skip likely existing output files\nCancel = abort",
+            "Existing Files",
+            3
+        )
+        if existing_response == 2 then
+            set_message("Queue cancelled.")
+            return nil
+        end
+
+        return {
+            skip_existing = existing_response == 7
+        }
+    end
+
+    local function dry_run_queue()
+        local ok, err = validate_enabled_rows()
+        if not ok then
+            set_message(err)
+            return
+        end
+
+        reaper.ShowConsoleMsg("")
+        local plan = log_queue_plan(rows, tempo_multiplier, "=== DRY RUN: optimized GFX queue plan ===")
+        reaper.ShowMessageBox(plan.summary_text, "Dry Run Queue Plan", 0)
+        set_message("Dry run written to console; no queue entries added.")
     end
 
     local function copy_last_to_row(row_idx)
@@ -800,16 +1264,16 @@ local function prompt_per_region_settings(
         local row = rows[row_idx]
         local label
         local current
-        if col_idx == 2 then
+        if col_idx == 4 then
             label = "Base tempo"
             current = row.base_tempo
-        elseif col_idx == 3 then
+        elseif col_idx == 5 then
             label = "Min tempo"
             current = row.start_tempo
-        elseif col_idx == 4 then
+        elseif col_idx == 6 then
             label = "Max tempo"
             current = row.end_tempo
-        elseif col_idx == 5 then
+        elseif col_idx == 7 then
             label = "Step"
             current = row.step
         else
@@ -832,13 +1296,13 @@ local function prompt_per_region_settings(
             return
         end
 
-        if col_idx == 2 then
+        if col_idx == 4 then
             row.base_tempo = val
-        elseif col_idx == 3 then
-            row.start_tempo = val
-        elseif col_idx == 4 then
-            row.end_tempo = val
         elseif col_idx == 5 then
+            row.start_tempo = val
+        elseif col_idx == 6 then
+            row.end_tempo = val
+        elseif col_idx == 7 then
             row.step = val
         end
 
@@ -857,6 +1321,12 @@ local function prompt_per_region_settings(
         last_entry = snapshot_entry(row)
     end
 
+    local function toggle_enabled_cell(row_idx)
+        local row = rows[row_idx]
+        row.enabled = not row_is_enabled(row)
+        set_message(string.format("Row %d %s", row_idx, row.enabled and "enabled" or "disabled"))
+    end
+
     local function ui_loop()
         local w = gfx.w
         local h = gfx.h
@@ -865,27 +1335,30 @@ local function prompt_per_region_settings(
 
         local top_y = 12
         local btn_h = 32
-        local btn_w = 150
-        local gap = 12
         local bx = 16
-        local queue_hover = draw_button(bx, top_y, btn_w, btn_h, "Queue")
-        local cancel_hover = draw_button(bx + (btn_w + gap), top_y, btn_w, btn_h, "Cancel")
-        local copy_hover = draw_button(bx + (btn_w + gap) * 2, top_y, 220, btn_h, "Copy Last To Selected")
-        local fill_hover = draw_button(bx + (btn_w + gap) * 2 + 232, top_y, 220, btn_h, "Fill Down From Selected")
-        local copy_all_hover = draw_button(bx + (btn_w + gap) * 2 + 464, top_y, 140, btn_h, "Copy To All")
-        local save_hover = draw_button(bx + (btn_w + gap) * 2 + 616, top_y, 64, btn_h, "Save")
-        local load_hover = draw_button(bx + (btn_w + gap) * 2 + 692, top_y, 64, btn_h, "Load")
+        local queue_hover = draw_button(bx, top_y, 110, btn_h, "Queue")
+        local dry_run_hover = draw_button(bx + 122, top_y, 110, btn_h, "Dry Run")
+        local sort_hover = draw_button(bx + 244, top_y, 140, btn_h, "Sort For Queue")
+        local cancel_hover = draw_button(bx + 396, top_y, 110, btn_h, "Cancel")
+        local save_hover = draw_button(bx + 518, top_y, 80, btn_h, "Save")
+        local load_hover = draw_button(bx + 610, top_y, 80, btn_h, "Load")
+
+        local row2_y = top_y + 42
+        local copy_hover = draw_button(bx, row2_y, 220, btn_h, "Copy Last To Selected")
+        local fill_hover = draw_button(bx + 232, row2_y, 220, btn_h, "Fill Down From Selected")
+        local copy_all_hover = draw_button(bx + 464, row2_y, 140, btn_h, "Copy To All")
 
         gfx.set(1, 1, 1, 1)
         gfx.x = 16
-        gfx.y = top_y + 40
-        gfx.drawstr("Double-click numeric cell to edit. Click Click cell to toggle. Mouse wheel scrolls rows.")
+        gfx.y = top_y + 82
+        gfx.drawstr("Double-click numeric cell to edit. Click On/Click cells to toggle. Mouse wheel scrolls rows.")
 
         local table_x = 16
-        local table_y = top_y + 74
+        local table_y = top_y + 116
         local row_h = 28
-        local col_w = { 350, 110, 110, 110, 110, 110 }
-        local col_name = { "Region", "Base", "Min", "Max", "Step", "Click" }
+        local col_w = { 54, 58, 330, 90, 90, 90, 80, 70 }
+        local col_name = { "On", "Grp", "Region", "Base", "Min", "Max", "Step", "Click" }
+        local row_group_ids = assign_regular_row_group_ids(rows)
 
         local data_top = table_y + row_h
         local visible_rows = math.max(1, math.floor((h - data_top - 70) / row_h))
@@ -914,6 +1387,8 @@ local function prompt_per_region_settings(
             local region_title = row.name ~= "" and row.name or "(unnamed)"
             local region_cell = string.format("%02d  #%d  %s", row_idx, row.number or -1, region_title)
             local values = {
+                row_is_enabled(row) and "Y" or "N",
+                row_is_enabled(row) and ("G" .. tostring(row_group_ids[row_idx] or "-")) or "-",
                 region_cell,
                 string.format("%g", row.base_tempo),
                 string.format("%g", row.start_tempo),
@@ -925,6 +1400,8 @@ local function prompt_per_region_settings(
             for c = 1, #col_w do
                 if row_idx == selected_row and c == selected_col then
                     gfx.set(0.24, 0.34, 0.50, 1)
+                elseif not row_is_enabled(row) then
+                    gfx.set(0.09, 0.09, 0.105, 1)
                 else
                     if row_idx % 2 == 0 then
                         gfx.set(0.14, 0.14, 0.17, 1)
@@ -933,7 +1410,11 @@ local function prompt_per_region_settings(
                     end
                 end
                 gfx.rect(cx, y, col_w[c], row_h, 1)
-                gfx.set(1, 1, 1, 1)
+                if not row_is_enabled(row) then
+                    gfx.set(0.55, 0.55, 0.58, 1)
+                else
+                    gfx.set(1, 1, 1, 1)
+                end
                 gfx.x = cx + 8
                 gfx.y = y + 6
                 gfx.drawstr(values[c])
@@ -947,7 +1428,13 @@ local function prompt_per_region_settings(
         gfx.set(1, 1, 1, 1)
         gfx.x = 16
         gfx.y = footer_y + 8
-        gfx.drawstr(string.format("Rows: %d   Visible: %d   Scroll: %d", #rows, visible_rows, scroll_row))
+        gfx.drawstr(string.format(
+            "Rows: %d   Enabled: %d   Visible: %d   Scroll: %d",
+            #rows,
+            count_enabled_rows(rows),
+            visible_rows,
+            scroll_row
+        ))
         gfx.x = 16
         gfx.y = footer_y + 28
         gfx.drawstr(message)
@@ -979,20 +1466,16 @@ local function prompt_per_region_settings(
             local my = gfx.mouse_y
 
             if queue_hover then
-                local has_invalid_row = false
-                for i = 1, #rows do
-                    local ok, err = validate_row(rows[i])
-                    if not ok then
-                        set_message(string.format("Row %d invalid: %s", i, err))
-                        has_invalid_row = true
-                        break
-                    end
-                end
-                if not has_invalid_row then
+                local options = confirm_queue_options()
+                if options then
                     gfx.quit()
-                    queue_pending_rows_and_continue(proj, rows)
+                    queue_pending_rows_and_continue(proj, rows, options)
                     return nil
                 end
+            elseif dry_run_hover then
+                dry_run_queue()
+            elseif sort_hover then
+                sort_rows_for_queue()
             elseif cancel_hover then
                 gfx.quit()
                 return nil
@@ -1024,7 +1507,7 @@ local function prompt_per_region_settings(
             elseif load_hover then
                 load_piece_settings()
             else
-                local data_top_y = top_y + 74 + row_h
+                local data_top_y = top_y + 116 + row_h
                 if my >= data_top_y and my < data_top_y + visible_rows * row_h then
                     local vr = math.floor((my - data_top_y) / row_h) + 1
                     local row_idx = scroll_row + vr - 1
@@ -1048,14 +1531,16 @@ local function prompt_per_region_settings(
                             col == last_click_col and
                             (now - last_click_time) <= 0.4
 
-                        if col == 6 then
+                        if col == 1 then
+                            toggle_enabled_cell(row_idx)
+                        elseif col == 8 then
                             toggle_click_cell(row_idx)
                             set_message(string.format(
                                 "Row %d click %s",
                                 row_idx,
                                 rows[row_idx].render_click and "enabled" or "disabled"
                             ))
-                        elseif col >= 2 and col <= 5 and is_double_click then
+                        elseif col >= 4 and col <= 7 and is_double_click then
                             edit_number_cell(row_idx, col)
                         end
 
@@ -1118,6 +1603,196 @@ local function restore_render_state(proj, state)
         if state.strings[key] ~= nil then
             reaper.GetSetProjectInfo_String(proj, key, state.strings[key], true)
         end
+    end
+end
+
+local COMMON_RENDER_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".aif",
+    ".aiff",
+    ".m4a"
+}
+
+local function path_is_absolute(path)
+    return path and (path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil)
+end
+
+local function join_path(left, right)
+    if not left or left == "" then
+        return right or ""
+    end
+    if not right or right == "" then
+        return left
+    end
+    if path_is_absolute(right) then
+        return right
+    end
+    return left:gsub("[/\\]+$", "") .. "/" .. right:gsub("^[/\\]+", "")
+end
+
+local function file_exists(path)
+    local file = io.open(path, "rb")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
+local function get_project_directory(proj)
+    if reaper.GetProjectPathEx then
+        local ok, value = pcall(reaper.GetProjectPathEx, proj, "")
+        if ok and value and value ~= "" then
+            return value
+        end
+    end
+
+    if reaper.GetProjectPath then
+        local ok, value = pcall(reaper.GetProjectPath, "")
+        if ok and value and value ~= "" then
+            return value
+        end
+    end
+
+    return ""
+end
+
+local function get_project_stem(proj)
+    local name = ""
+    if reaper.GetProjectName then
+        local ok, value = pcall(reaper.GetProjectName, proj, "")
+        if ok and value then
+            name = value
+        end
+    end
+
+    name = name:match("([^/\\]+)$") or name
+    name = name:gsub("%.[Rr][Pp][Pp]%-?[Bb]?[Aa]?[Kk]?$", "")
+    name = name:gsub("%.[^%.]+$", "")
+    if name == "" then
+        name = "untitled"
+    end
+    return name
+end
+
+local function get_render_directory(proj)
+    local ok, render_dir = reaper.GetSetProjectInfo_String(proj, "RENDER_FILE", "", false)
+    if not ok or not render_dir or render_dir == "" then
+        return get_project_directory(proj)
+    end
+
+    if path_is_absolute(render_dir) then
+        return render_dir
+    end
+
+    return join_path(get_project_directory(proj), render_dir)
+end
+
+local function expand_render_pattern_for_region(proj, pattern, region)
+    local result = pattern or ""
+    local region_name = region.name ~= "" and region.name or tostring(region.number or "")
+    result = result:gsub("%$regionnumber", function()
+        return tostring(region.number or "")
+    end)
+    result = result:gsub("%$region", function()
+        return region_name
+    end)
+    result = result:gsub("%$project", function()
+        return get_project_stem(proj)
+    end)
+    if result:find("$", 1, true) then
+        return nil
+    end
+    return result
+end
+
+local function has_probable_extension(path)
+    local leaf = path:match("([^/\\]+)$") or path
+    return leaf:match("%.[A-Za-z0-9]+$") ~= nil
+end
+
+local function find_existing_render_path(proj, pattern, region)
+    local expanded = expand_render_pattern_for_region(proj, pattern, region)
+    if not expanded or expanded == "" then
+        return nil, false
+    end
+
+    local stem = join_path(get_render_directory(proj), expanded)
+    if has_probable_extension(stem) then
+        return file_exists(stem) and stem or nil, true
+    end
+
+    for i = 1, #COMMON_RENDER_EXTENSIONS do
+        local candidate = stem .. COMMON_RENDER_EXTENSIONS[i]
+        if file_exists(candidate) then
+            return candidate, true
+        end
+    end
+
+    return nil, true
+end
+
+local function filter_regions_for_existing_outputs(proj, pattern, regions, skip_existing)
+    local missing_regions = {}
+    local existing = {}
+    local unchecked = 0
+
+    for i = 1, #regions do
+        local region = regions[i]
+        local existing_path, checked = find_existing_render_path(proj, pattern, region)
+        if existing_path then
+            existing[#existing + 1] = {
+                region = region,
+                path = existing_path
+            }
+            if not skip_existing then
+                missing_regions[#missing_regions + 1] = region
+            end
+        else
+            if not checked then
+                unchecked = unchecked + 1
+            end
+            missing_regions[#missing_regions + 1] = region
+        end
+    end
+
+    return missing_regions, existing, unchecked
+end
+
+local function region_rows_label(regions)
+    local labels = {}
+    for i = 1, #regions do
+        labels[#labels + 1] = "R" .. tostring(regions[i].queue_row_index or "?")
+    end
+    return table.concat(labels, ", ")
+end
+
+local function log_existing_output_result(label, existing, unchecked, skip_existing)
+    if #existing > 0 then
+        log(string.format(
+            "%s: %d likely existing output(s)%s.",
+            label,
+            #existing,
+            skip_existing and " skipped" or " found; queueing anyway"
+        ))
+        local limit = math.min(#existing, 8)
+        for i = 1, limit do
+            log(string.format("  existing: %s", existing[i].path))
+        end
+        if #existing > limit then
+            log(string.format("  ...and %d more.", #existing - limit))
+        end
+    end
+
+    if unchecked > 0 then
+        log(string.format(
+            "%s: %d output path(s) could not be checked because the render pattern has unresolved wildcards.",
+            label,
+            unchecked
+        ))
     end
 end
 
@@ -1190,12 +1865,21 @@ main = function()
     local per_region_configs = nil
     local region_selection_scope = "all regions"
     local pending_rows = nil
+    local queue_options = {
+        skip_existing = false
+    }
     do
         local has_pending, pending_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY)
         if has_pending == 1 and pending_blob and pending_blob ~= "" then
             pending_rows = deserialize_region_rows(pending_blob)
             reaper.SetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY, "")
             region_selection_scope = string.format("queued grid rows (%d)", #pending_rows)
+        end
+
+        local has_options, options_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_QUEUE_OPTIONS_KEY)
+        if has_options == 1 and options_blob and options_blob ~= "" then
+            queue_options = deserialize_queue_options(options_blob)
+            reaper.SetProjExtState(proj, EXT_SECTION, PENDING_QUEUE_OPTIONS_KEY, "")
         end
     end
 
@@ -1227,9 +1911,6 @@ main = function()
             local configs, err = prompt_per_region_settings(
                 proj,
                 regions,
-                start_tempo,
-                step,
-                end_tempo,
                 tempo_multiplier,
                 render_click
             )
@@ -1328,33 +2009,45 @@ main = function()
     if per_region_mode then
         reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
 
+        local queue_plan = build_queue_summary(per_region_configs, tempo_multiplier)
+        local click_groups = queue_plan.click_groups
+        local regular_groups = queue_plan.regular_groups
         local queued_click_count = 0
+        local queued_click_region_count = 0
         local queued_regular_count = 0
-        local stop_queue = false
+        local queued_regular_region_count = 0
+        local skipped_existing_count = 0
+        local stopped_early = false
 
-        for i = 1, #per_region_configs do
-            if stop_queue then
-                break
+        log(queue_plan.summary_text)
+        log("Existing-file skip: " .. (queue_options.skip_existing and "YES" or "NO"))
+        if #click_groups > 0 then
+            log("Planned click groups:")
+            for group_index = 1, #click_groups do
+                log(string.format("  C%d: %s", group_index, describe_group(click_groups[group_index])))
             end
-
-            local cfg = per_region_configs[i]
-            if cfg == nil then
-                log(string.format("R%d: SKIP (missing per-region config).", i))
-                goto continue_per_region_config
+        end
+        if #regular_groups > 0 then
+            log("Planned regular groups:")
+            for group_index = 1, #regular_groups do
+                log(string.format("  G%d: %s", group_index, describe_group(regular_groups[group_index])))
             end
+        end
 
-            do
-            local base_actual = cfg.base_tempo * tempo_multiplier
-            select_only_region(proj, cfg)
+        if #click_groups > 0 then
+            if not click_track then
+                log("SKIP CLICK: no CLICKTRACK found.")
+            elseif not command_is_configured(CMD_APPLY_GPHIL_CLICK) then
+                log("SKIP CLICK: GPHIL_CLICK preset action not configured.")
+            else
+                for group_index = 1, #click_groups do
+                    local group = click_groups[group_index]
 
-            if cfg.render_click then
-                if not click_track then
-                    log(string.format("R%d '%s': SKIP CLICK (no CLICKTRACK found).", i, cfg.name))
-                elseif not command_is_configured(CMD_APPLY_GPHIL_CLICK) then
-                    log(string.format("R%d '%s': SKIP CLICK (preset missing).", i, cfg.name))
-                else
                     restore_tempo_map(proj, markers_original)
-                    ensure_tempo_marker_at_time(proj, cfg.pos, base_actual)
+                    for region_index = 1, #group.regions do
+                        local cfg = group.regions[region_index]
+                        ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
+                    end
 
                     reaper.Main_OnCommand(40297, 0)
                     reaper.SetTrackSelected(click_track, true)
@@ -1364,22 +2057,45 @@ main = function()
 
                     restore_render_state(proj, original_render_state)
                     if apply_preset(CMD_APPLY_GPHIL_CLICK, "GPHIL_CLICK") then
-                        local base_suffix = math.floor(cfg.base_tempo + 0.5)
-                        local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, tostring(base_suffix))
+                        local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, group.base_suffix)
                         set_render_pattern(proj, click_pattern)
-                        reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
-                        reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                        reaper.UpdateArrange()
-                        queued_click_count = queued_click_count + 1
-                        log(string.format(
-                            "R%d '%s': CLICK QUEUED at %g -> %s",
-                            i,
-                            cfg.name ~= "" and cfg.name or "(unnamed)",
-                            cfg.base_tempo,
-                            click_pattern
-                        ))
+                        local active_regions, existing, unchecked = filter_regions_for_existing_outputs(
+                            proj,
+                            click_pattern,
+                            group.regions,
+                            queue_options.skip_existing
+                        )
+                        log_existing_output_result(
+                            string.format("CLICK group %d", group_index),
+                            existing,
+                            unchecked,
+                            queue_options.skip_existing
+                        )
+                        skipped_existing_count = skipped_existing_count + (#group.regions - #active_regions)
+
+                        if #active_regions == 0 then
+                            log(string.format("CLICK group %d SKIP: all likely outputs already exist.", group_index))
+                        else
+                            select_regions(proj, active_regions)
+                            reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+                            reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                            reaper.UpdateArrange()
+                            queued_click_count = queued_click_count + 1
+                            queued_click_region_count = queued_click_region_count + #active_regions
+                            log(string.format(
+                                "CLICK group %d QUEUED: %s (%s), base %g -> %s",
+                                group_index,
+                                region_rows_label(active_regions),
+                                region_count_label(#active_regions),
+                                group.base_tempo,
+                                click_pattern
+                            ))
+                        end
                     else
-                        log(string.format("R%d '%s': SKIP CLICK (failed to apply preset).", i, cfg.name))
+                        log(string.format(
+                            "CLICK group %d SKIP: failed to apply GPHIL_CLICK preset.",
+                            group_index
+                        ))
                     end
 
                     if original_click_mute ~= nil then
@@ -1391,24 +2107,27 @@ main = function()
                     end
                 end
             end
+        end
 
-            if not command_is_configured(CMD_APPLY_GPHIL_RENDER) then
-                log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
-                stop_queue = true
-                break
-            end
-
-            local tempo = cfg.start_tempo
-            while (cfg.step > 0 and tempo <= cfg.end_tempo) or (cfg.step < 0 and tempo >= cfg.end_tempo) do
-                local target_tempo = tempo
-                local target_actual = target_tempo * tempo_multiplier
-                local factor = target_actual / base_actual
+        if not command_is_configured(CMD_APPLY_GPHIL_RENDER) then
+            log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
+        else
+            for group_index = 1, #regular_groups do
+                local group = regular_groups[group_index]
 
                 restore_tempo_map(proj, markers_original)
-                ensure_tempo_marker_at_time(proj, cfg.pos, base_actual)
+                for region_index = 1, #group.regions do
+                    local cfg = group.regions[region_index]
+                    ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
+                end
+
                 local markers_for_scale = capture_tempo_map(proj)
-                scale_tempo_map(proj, markers_for_scale, factor)
-                ensure_tempo_marker_at_time(proj, cfg.pos, target_actual)
+                scale_tempo_map(proj, markers_for_scale, group.factor)
+
+                for region_index = 1, #group.regions do
+                    local cfg = group.regions[region_index]
+                    ensure_tempo_marker_at_time(proj, cfg.pos, group.target_actual)
+                end
 
                 if click_track and original_click_mute ~= nil then
                     reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
@@ -1417,38 +2136,58 @@ main = function()
                 restore_render_state(proj, original_render_state)
                 if not apply_preset(CMD_APPLY_GPHIL_RENDER, "GPHIL_RENDER") then
                     log("Stopping: failed to apply GPHIL_RENDER preset.")
-                    stop_queue = true
+                    stopped_early = true
                     break
                 end
 
-                local tempo_display = math.floor(target_tempo + 0.5)
-                local new_pattern = with_tempo_suffix(RENDER_PATTERN_BASE, tostring(tempo_display))
+                local new_pattern = with_tempo_suffix(RENDER_PATTERN_BASE, group.tempo_display)
                 set_render_pattern(proj, new_pattern)
-                reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
-                reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                reaper.UpdateArrange()
-                queued_regular_count = queued_regular_count + 1
-                log(string.format(
-                    "R%d '%s': QUEUED tempo %g (factor %.6f) -> %s",
-                    i,
-                    cfg.name ~= "" and cfg.name or "(unnamed)",
-                    target_tempo,
-                    factor,
-                    new_pattern
-                ))
+                local active_regions, existing, unchecked = filter_regions_for_existing_outputs(
+                    proj,
+                    new_pattern,
+                    group.regions,
+                    queue_options.skip_existing
+                )
+                log_existing_output_result(
+                    string.format("Render group %d", group_index),
+                    existing,
+                    unchecked,
+                    queue_options.skip_existing
+                )
+                skipped_existing_count = skipped_existing_count + (#group.regions - #active_regions)
 
-                tempo = tempo + cfg.step
+                if #active_regions == 0 then
+                    log(string.format("Render group %d SKIP: all likely outputs already exist.", group_index))
+                else
+                    select_regions(proj, active_regions)
+                    reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+                    reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                    reaper.UpdateArrange()
+                    queued_regular_count = queued_regular_count + 1
+                    queued_regular_region_count = queued_regular_region_count + #active_regions
+                    log(string.format(
+                        "Render group %d QUEUED: %s (%s), tempo %g (base %g, factor %.6f) -> %s",
+                        group_index,
+                        region_rows_label(active_regions),
+                        region_count_label(#active_regions),
+                        group.target_tempo,
+                        group.base_tempo,
+                        group.factor,
+                        new_pattern
+                    ))
+                end
             end
-            end
-
-            ::continue_per_region_config::
         end
 
         log("--------------------------------------")
         log(string.format(
-            "Per-region queue complete. Click entries: %d, regular entries: %d.",
+            "Per-region queue %s. Click entries: %d (%d regions), regular entries: %d (%d regions), skipped existing region outputs: %d.",
+            stopped_early and "stopped early" or "complete",
             queued_click_count,
-            queued_regular_count
+            queued_click_region_count,
+            queued_regular_count,
+            queued_regular_region_count,
+            skipped_existing_count
         ))
     else
         -- 1) Optional CLICK render at base tempo
