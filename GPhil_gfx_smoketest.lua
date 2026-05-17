@@ -1,6 +1,11 @@
 -- Minimal GFX smoke test for REAPER ReaScript (deferred/non-blocking)
 -- Opens a window and exits on ESC or window close.
 
+---@diagnostic disable-next-line: undefined-global
+local reaper = reaper
+---@diagnostic disable-next-line: undefined-global
+local gfx = gfx
+
 gfx.init("GPhil GFX Smoke Test", 520, 180)
 gfx.setfont(1, "Arial", 20)
 

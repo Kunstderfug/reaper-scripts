@@ -3,6 +3,8 @@
 
 ---@diagnostic disable-next-line: undefined-global
 local reaper                 = reaper
+---@diagnostic disable-next-line: undefined-global
+local gfx                    = gfx
 
 local ADD_TO_QUEUE_CMD       = 41823 -- File: Add project to render queue, using the most recent render settings
 
