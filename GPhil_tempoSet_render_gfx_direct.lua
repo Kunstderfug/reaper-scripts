@@ -1338,6 +1338,12 @@ main = function()
             end
 
             local cfg = per_region_configs[i]
+            if cfg == nil then
+                log(string.format("R%d: SKIP (missing per-region config).", i))
+                goto continue_per_region_config
+            end
+
+            do
             local base_actual = cfg.base_tempo * tempo_multiplier
             select_only_region(proj, cfg)
 
@@ -1433,6 +1439,9 @@ main = function()
 
                 tempo = tempo + cfg.step
             end
+            end
+
+            ::continue_per_region_config::
         end
 
         log("--------------------------------------")
