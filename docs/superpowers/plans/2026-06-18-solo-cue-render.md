@@ -1,0 +1,1765 @@
+# Solo-Cue Render (GFX direct) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Create `GPhil_soloCue_render_gfx_direct.lua`, a REAPER script that renders exactly one track (named `"SOLO"`) for each project region at that region's auto-detected base tempo, derived from `GPhil_tempoSet_render_gfx_direct.lua` with the click/full-mix/step machinery removed.
+
+**Architecture:** Copy the source script verbatim, then edit it: swap constants (preset, pattern, solo track, ProjExtState section), replace the clicktrack-based isolation with true REAPER `B_SOLO` isolation, delete the tempo-step/scale/click flows, and slim the GFX grid to 4 columns. Net result is one render per region at base tempo, grouped by base tempo into queue entries.
+
+**Tech Stack:** Lua, REAPER ReaScript API (`reaper.*`, `gfx.*`), ProjExtState persistence, cfillion "Apply render preset" action id.
+
+**Source script of record:** `/Volumes/DRIVE/DEV/reaper-scripts/GPhil_tempoSet_render_gfx_direct.lua` (2346 lines). Every line reference below is 1-indexed against that file.
+
+**Conventions:**
+- This is a derivative script. Verification is done by `luac -p` (syntax check), by `diff`-ing structural helpers against the source, and finally by a manual run checklist. REAPER does not run headless, so there are no automated unit tests — the plan substitutes careful structural verification + a manual run sheet.
+- After the script exists and passes `luac -p`, deploy per AGENTS.md: copy to `/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/` and verify the copy matches.
+- Match the source's existing comment density, naming, and indentation (it uses a column-aligned `=` style for top-level locals — preserve that style for any constants you add or move).
+
+---
+
+## File Structure
+
+- **Create:** `GPhil_soloCue_render_gfx_direct.lua` — the new script (single file, mirrors source structure).
+- **Deploy target (final task only):** `/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/GPhil_soloCue_render_gfx_direct.lua`
+- **No other repo files change.** The source script is never modified.
+
+---
+
+## Task 1: Seed the new file as a verbatim copy of the source
+
+The safest way to derive a 2300-line script is to start from a byte-identical copy and then edit in place. This task only creates that copy and confirms it is identical.
+
+**Files:**
+- Create: `GPhil_soloCue_render_gfx_direct.lua`
+
+- [ ] **Step 1: Copy the source file to the new path**
+
+Run:
+```bash
+cp /Volumes/DRIVE/DEV/reaper-scripts/GPhil_tempoSet_render_gfx_direct.lua \
+   /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+
+- [ ] **Step 2: Verify the copy is byte-identical to the source**
+
+Run:
+```bash
+diff -q /Volumes/DRIVE/DEV/reaper-scripts/GPhil_tempoSet_render_gfx_direct.lua \
+        /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo IDENTICAL
+```
+Expected: `IDENTICAL` (no diff output). If `diff` prints anything, re-copy.
+
+- [ ] **Step 3: Verify it compiles (Lua syntax check)**
+
+REAPER scripts run under Lua 5.x; `luac` is the canonical syntax checker. If `luac` is unavailable, see the fallback below.
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK` and exit code 0.
+
+Fallback if `luac` is missing:
+```bash
+command -v luac >/dev/null 2>&1 || { echo "luac not found; install lua or use reaper's interpreter"; }
+```
+If neither `luac` nor a Lua interpreter is available, note this in your task summary and proceed — the subsequent edits are structural and will be syntax-checked again at the end. Do not skip later `luac -p` steps; install lua first if possible (e.g. `brew install lua`).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Seed soloCue script from tempoSet_render_gfx_direct"
+```
+
+---
+
+## Task 2: Swap the header constants block
+
+Replace the file header comment and the top-of-file constants so the script identifies itself and is configured for solo-cue rendering. Also rename the ProjExtState `EXT_SECTION` so the two scripts' saved settings never collide.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` lines 1–31 (header comment + constants up to `SAVED_REGION_ROWS_KEY`)
+
+- [ ] **Step 1: Replace the header comment (lines 1–2)**
+
+Replace these two lines:
+```lua
+-- renderTempoSet_queue_with_click_gfx_direct.lua
+-- Batch queue with immediate GFX region grid (no initial GetUserInputs dialog)
+```
+with:
+```lua
+-- renderSoloCue_queue_gfx_direct.lua
+-- Render the SOLO track for each region at its detected base tempo (GFX region grid)
+```
+
+- [ ] **Step 2: Replace the two preset constants (lines 11–13)**
+
+Replace:
+```lua
+-- Actions generated by cfillion_Apply render preset (create action).lua
+local CMD_APPLY_GPHIL_CLICK               = "_RSe07780b8d7eb28a48e88b3b7e3467d7c79cade66"
+local CMD_APPLY_GPHIL_RENDER              = "_RS67c8ada3573313a7c135385939c19cbc2450964d"
+```
+with:
+```lua
+-- Action generated by cfillion_Apply render preset (create action).lua
+local CMD_APPLY_SOLO_CUE                  = "_RSb6214dfe2bae78d7d897e42e57450017be87e017"
+```
+
+- [ ] **Step 3: Replace the two pattern constants (lines 15–23)**
+
+Replace:
+```lua
+-- Base pattern for CLICK renders.
+-- Adjust this to match your convention.
+-- Example (as requested): CLICKDATA/$project_$region_120 (suffix will be replaced)
+local CLICK_PATTERN_BASE                  = "CLICKDATA/$project_$region_120"
+
+-- Base pattern for regular renders.
+-- Adjust this to match your convention.
+-- Example (as requested): AUDIO/$region/$project_$region_160 (suffix will be replaced)
+local RENDER_PATTERN_BASE                 = "AUDIO/$region/$project_$region_160"
+```
+with:
+```lua
+-- Name of the track to isolate per render (case-insensitive substring match).
+local SOLO_TRACK_NAME                     = "SOLO"
+
+-- Base pattern for SOLO_CUE renders.
+-- Adjust this to match your convention.
+-- The trailing _120 is the tempo suffix and is replaced by each region's base tempo.
+local SOLO_CUE_PATTERN_BASE               = "AUDIO/SOLO_CUE/$region/$project_$region_SOLO_CUE_120"
+```
+
+- [ ] **Step 4: Rename the ProjExtState section (line 25)**
+
+Replace:
+```lua
+local EXT_SECTION                         = "renderTempoSet"
+```
+with:
+```lua
+local EXT_SECTION                         = "renderSoloCue"
+```
+
+- [ ] **Step 5: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`. (The file will not yet run correctly — it still references deleted constants in later tasks — but it must still parse.)
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Swap header constants for soloCue script"
+```
+
+---
+
+## Task 3: Delete the now-unused `PER_REGION_DEFAULT_STEP` constant
+
+With tempo stepping gone, this constant has no remaining users. Remove it to avoid a dead-code reference later.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` line 27
+
+- [ ] **Step 1: Delete the constant and its comment context**
+
+After Task 2, the block around the former line 27 reads:
+```lua
+local EXT_SECTION                         = "renderSoloCue"
+local GFX_DIRECT_SELECTED_ONLY            = true
+local PER_REGION_DEFAULT_STEP             = 5
+local GROUP_KEY_SCALE                     = 1000000
+```
+Delete only the `PER_REGION_DEFAULT_STEP` line:
+```lua
+local EXT_SECTION                         = "renderSoloCue"
+local GFX_DIRECT_SELECTED_ONLY            = true
+local GROUP_KEY_SCALE                     = 1000000
+```
+
+- [ ] **Step 2: Confirm no remaining references**
+
+Run:
+```bash
+grep -n "PER_REGION_DEFAULT_STEP" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: no output. (Task 6 removes its sole user, `default_per_region_tempo_range`; this grep now guards against any stray reference.)
+
+- [ ] **Step 3: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Remove unused PER_REGION_DEFAULT_STEP constant"
+```
+
+---
+
+## Task 4: Replace `find_click_track` with `get_track_by_name_contains` + a solo finder
+
+The source has a `find_click_track` helper (case-insensitive substring `clicktrack`). The new script needs a generic name-contains finder plus a thin SOLO-specific wrapper. The renderStems sibling already defines `get_track_by_name_contains`; replicate it here for self-containment, and define `find_solo_track` on top of it.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` — the function defined at source lines 75–85 (`find_click_track`)
+
+- [ ] **Step 1: Replace the function body**
+
+Replace the entire `find_click_track` function:
+```lua
+local function find_click_track(proj)
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        local _, name = reaper.GetTrackName(track, "")
+        if name and name:lower():find("clicktrack") then
+            return track
+        end
+    end
+    return nil
+end
+```
+with:
+```lua
+local function get_track_by_name_contains(proj, name_fragment)
+    local lc = name_fragment:lower()
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        local _, name = reaper.GetTrackName(track, "")
+        if name and name:lower():find(lc, 1, true) then
+            return track
+        end
+    end
+    return nil
+end
+
+local function find_solo_track(proj)
+    return get_track_by_name_contains(proj, SOLO_TRACK_NAME)
+end
+```
+
+- [ ] **Step 2: Confirm no remaining `find_click_track` references**
+
+Run:
+```bash
+grep -n "find_click_track\|click_track\|clicktrack\|CLICKTRACK" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: no output. (All other click references are removed in Tasks 8 and 9.) If anything prints here, do not proceed — locate and remove it.
+
+- [ ] **Step 3: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Replace clicktrack finder with solo-track finder"
+```
+
+---
+
+## Task 5: Simplify region-row serialization to base-only
+
+The serialized region-row format carries Min/Max/Step/Click/On columns that no longer all apply. Reduce it to the columns this script actually uses: identity + Base + enabled. Keep the tab-delimited text format so the existing Save/Load machinery continues to work; just carry fewer fields. Keep `render_click` out entirely.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` — `serialize_region_rows` (source lines 144–163) and `deserialize_region_rows` (source lines 165–198)
+
+- [ ] **Step 1: Replace `serialize_region_rows`**
+
+Replace the whole function:
+```lua
+local function serialize_region_rows(rows)
+    local out = {}
+    for i = 1, #rows do
+        local row = rows[i]
+        out[#out + 1] = table.concat({
+            tostring(row.internal_index or -1),
+            tostring(row.pos or 0),
+            tostring(row.rgnend or 0),
+            sanitize_name_for_storage(row.name),
+            tostring(row.number or -1),
+            tostring(row.base_tempo or 0),
+            row_is_enabled(row) and "1" or "0"
+        }, "\t")
+    end
+    return table.concat(out, "\n")
+end
+```
+
+- [ ] **Step 2: Replace `deserialize_region_rows`**
+
+Replace the whole function:
+```lua
+local function deserialize_region_rows(blob)
+    local rows = {}
+    if not blob or blob == "" then
+        return rows
+    end
+
+    for line in blob:gmatch("([^\n]+)") do
+        local cols = {}
+        for token in line:gmatch("([^\t]*)\t?") do
+            if token == "" and #cols >= 6 then
+                break
+            end
+            cols[#cols + 1] = token
+        end
+
+        if #cols >= 6 then
+            rows[#rows + 1] = {
+                internal_index = tonumber(cols[1]) or -1,
+                pos = tonumber(cols[2]) or 0,
+                rgnend = tonumber(cols[3]) or 0,
+                name = cols[4] or "",
+                number = tonumber(cols[5]) or -1,
+                base_tempo = tonumber(cols[6]) or 0,
+                enabled = cols[7] ~= "0"
+            }
+        end
+    end
+
+    return rows
+end
+```
+
+- [ ] **Step 3: Confirm no stale field writes in serialization**
+
+Run:
+```bash
+grep -n "row.render_click\|row.start_tempo\|row.end_tempo\|row.step" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: a handful of hits in `prompt_per_region_settings` and `build_per_region_queue_groups` (handled in Tasks 6 and 7). The serialization functions themselves must not appear in this output. If they do, re-edit.
+
+- [ ] **Step 4: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Simplify region-row serialization to base-only"
+```
+
+---
+
+## Task 6: Simplify `load_last_params` / `save_last_params` to base + multiplier + flags
+
+The script no longer uses start/step/end, but it still needs to validate "saved defaults are usable" on startup, and it still uses `tempo_multiplier` (base_actual = base × multiplier). Keep base, multiplier, and the region-scope flags; drop start/step/end/render_click/force_region_base.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` — `load_last_params` (source lines 234–277) and `save_last_params` (source lines 279–307)
+
+- [ ] **Step 1: Replace `load_last_params`**
+
+Replace the whole function with:
+```lua
+local function load_last_params(proj)
+    local function get_num(key, fallback)
+        local retval, val = reaper.GetProjExtState(proj, EXT_SECTION, key)
+        if retval == 1 then
+            local n = tonumber(val)
+            if n then
+                return n
+            end
+        end
+        return fallback
+    end
+
+    local function get_bool(key, fallback)
+        local retval, val = reaper.GetProjExtState(proj, EXT_SECTION, key)
+        if retval == 1 then
+            return parse_bool(val, fallback)
+        end
+        return fallback
+    end
+
+    local base                     = get_num("base_tempo", 60)
+    local multiplier               = get_num("tempo_multiplier", 1)
+    local per_region_mode          = true
+    local per_region_selected_only = get_bool("per_region_selected_only", false)
+    local retval, region_csv       = reaper.GetProjExtState(proj, EXT_SECTION, "region_name_filter")
+    local region_name_filter       = retval == 1 and region_csv or ""
+
+    return
+        base,
+        multiplier,
+        per_region_mode,
+        per_region_selected_only,
+        region_name_filter
+end
+```
+
+- [ ] **Step 2: Replace `save_last_params`**
+
+Replace the whole function with:
+```lua
+local function save_last_params(
+    proj,
+    base,
+    multiplier,
+    per_region_mode,
+    per_region_selected_only,
+    region_name_filter
+)
+    reaper.SetProjExtState(proj, EXT_SECTION, "base_tempo", tostring(base))
+    reaper.SetProjExtState(proj, EXT_SECTION, "tempo_multiplier", tostring(multiplier))
+    reaper.SetProjExtState(proj, EXT_SECTION, "per_region_mode", per_region_mode and "Y" or "N")
+    reaper.SetProjExtState(
+        proj,
+        EXT_SECTION,
+        "per_region_selected_only",
+        per_region_selected_only and "Y" or "N"
+    )
+    reaper.SetProjExtState(proj, EXT_SECTION, "region_name_filter", region_name_filter or "")
+end
+```
+
+- [ ] **Step 3: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`. (`main` still calls these with the old arity; Task 9 fixes the call sites. Syntax check passes because Lua is not arity-checked at parse time.)
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Simplify load/save last params to base + multiplier + flags"
+```
+
+---
+
+## Task 7: Replace the queue-group builder with base-only grouping
+
+`build_per_region_queue_groups` currently produces click groups and per-target-tempo regular groups. Replace it with a single list of groups keyed only by base tempo. Each region joins the group matching its base tempo; there is no inner tempo loop. Remove `default_per_region_tempo_range` (its only caller, `prompt_per_region_settings`, is rewritten in Task 8). Also remove `tempo_suffix_value`'s step-loop callers by keeping the helper itself (it's still used to format the base tempo into the pattern suffix).
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` — `default_per_region_tempo_range` (source lines 1003–1006) and `build_per_region_queue_groups` (source lines 929–1001)
+
+- [ ] **Step 1: Delete `default_per_region_tempo_range`**
+
+Delete the whole function:
+```lua
+local function default_per_region_tempo_range(base_tempo)
+    local step = PER_REGION_DEFAULT_STEP
+    return base_tempo - step * 4, step, base_tempo + step * 4
+end
+```
+
+- [ ] **Step 2: Replace `build_per_region_queue_groups`**
+
+Replace the whole function (the one assigned to the forward-declared local) with:
+```lua
+build_per_region_queue_groups = function(configs, tempo_multiplier)
+    local groups = {}
+    local by_key = {}
+
+    for row_index = 1, #configs do
+        local cfg = configs[row_index]
+        if row_is_enabled(cfg) and cfg.base_tempo and cfg.base_tempo > 0 then
+            cfg.queue_row_index = row_index
+            local base_actual = cfg.base_tempo * tempo_multiplier
+            local base_suffix = tempo_suffix_value(cfg.base_tempo)
+
+            local key = table.concat({
+                numeric_group_key(base_actual),
+                base_suffix
+            }, "|")
+            local group = by_key[key]
+            if not group then
+                group = {
+                    base_tempo = cfg.base_tempo,
+                    base_actual = base_actual,
+                    base_suffix = base_suffix,
+                    regions = {},
+                    row_indexes = {}
+                }
+                by_key[key] = group
+                groups[#groups + 1] = group
+            end
+            add_region_to_group(group, cfg, row_index)
+        end
+    end
+
+    return groups
+end
+```
+
+- [ ] **Step 3: Update `build_queue_summary` to use the single list**
+
+The summary function (source lines 869–908) currently unpacks `click_groups, regular_groups`. Replace its first executable line and the field assembly so it works with one list.
+
+Find:
+```lua
+local function build_queue_summary(rows, tempo_multiplier)
+    local click_groups, regular_groups = build_per_region_queue_groups(rows, tempo_multiplier)
+    local enabled_count = count_enabled_rows(rows)
+    local click_region_count = count_group_regions(click_groups)
+    local regular_region_count = count_group_regions(regular_groups)
+    local skipped_count = #rows - enabled_count
+    local ungrouped_entries = click_region_count + regular_region_count
+    local grouped_entries = #click_groups + #regular_groups
+    local saved_entries = ungrouped_entries - grouped_entries
+    if saved_entries < 0 then
+        saved_entries = 0
+    end
+
+    local lines = {
+        string.format("Enabled rows: %d of %d", enabled_count, #rows),
+        string.format("Skipped rows: %d", skipped_count),
+        string.format(
+            "Regular: %d queue project(s), %d region render(s)",
+            #regular_groups,
+            regular_region_count
+        ),
+        string.format(
+            "Click: %d queue project(s), %d region render(s)",
+            #click_groups,
+            click_region_count
+        ),
+        string.format("Grouping avoids %d separate queue entr%s.", saved_entries, saved_entries == 1 and "y" or "ies"),
+        "Grouping rule: same base tempo + same target tempo."
+    }
+
+    return {
+        click_groups = click_groups,
+        regular_groups = regular_groups,
+        enabled_count = enabled_count,
+        click_region_count = click_region_count,
+        regular_region_count = regular_region_count,
+        grouped_entries = grouped_entries,
+        summary_text = table.concat(lines, "\n")
+    }
+end
+```
+and replace the entire function with:
+```lua
+local function build_queue_summary(rows, tempo_multiplier)
+    local groups = build_per_region_queue_groups(rows, tempo_multiplier)
+    local enabled_count = count_enabled_rows(rows)
+    local region_count = count_group_regions(groups)
+    local skipped_count = #rows - enabled_count
+    local ungrouped_entries = region_count
+    local grouped_entries = #groups
+    local saved_entries = ungrouped_entries - grouped_entries
+    if saved_entries < 0 then
+        saved_entries = 0
+    end
+
+    local lines = {
+        string.format("Enabled rows: %d of %d", enabled_count, #rows),
+        string.format("Skipped rows: %d", skipped_count),
+        string.format(
+            "Solo-Cue: %d queue project(s), %d region render(s)",
+            #groups,
+            region_count
+        ),
+        string.format("Grouping avoids %d separate queue entr%s.", saved_entries, saved_entries == 1 and "y" or "ies"),
+        "Grouping rule: same base tempo."
+    }
+
+    return {
+        groups = groups,
+        enabled_count = enabled_count,
+        region_count = region_count,
+        grouped_entries = grouped_entries,
+        summary_text = table.concat(lines, "\n")
+    }
+end
+```
+
+- [ ] **Step 4: Update `log_queue_plan` and `describe_group`**
+
+`describe_group` (source lines 859–867) references `group.target_tempo`. Replace:
+```lua
+local function describe_group(group)
+    return string.format(
+        "%s (%s), base %g, target %s",
+        row_list_label(group),
+        region_count_label(#group.regions),
+        group.base_tempo or 0,
+        group.target_tempo and tostring(group.target_tempo) or "click"
+    )
+end
+```
+with:
+```lua
+local function describe_group(group)
+    return string.format(
+        "%s (%s), base %g",
+        row_list_label(group),
+        region_count_label(#group.regions),
+        group.base_tempo or 0
+    )
+end
+```
+
+`log_queue_plan` (source lines 910–927) prints click groups then regular groups. Replace:
+```lua
+local function log_queue_plan(rows, tempo_multiplier, title)
+    local plan = build_queue_summary(rows, tempo_multiplier)
+    log(title or "Queue plan")
+    log(plan.summary_text)
+    if #plan.click_groups > 0 then
+        log("Click groups:")
+        for i = 1, #plan.click_groups do
+            log(string.format("  C%d: %s", i, describe_group(plan.click_groups[i])))
+        end
+    end
+    if #plan.regular_groups > 0 then
+        log("Regular groups:")
+        for i = 1, #plan.regular_groups do
+            log(string.format("  G%d: %s", i, describe_group(plan.regular_groups[i])))
+        end
+    end
+    return plan
+end
+```
+with:
+```lua
+local function log_queue_plan(rows, tempo_multiplier, title)
+    local plan = build_queue_summary(rows, tempo_multiplier)
+    log(title or "Queue plan")
+    log(plan.summary_text)
+    if #plan.groups > 0 then
+        log("Groups:")
+        for i = 1, #plan.groups do
+            log(string.format("  G%d: %s", i, describe_group(plan.groups[i])))
+        end
+    end
+    return plan
+end
+```
+
+- [ ] **Step 5: Confirm no stale click/target references remain in this region**
+
+Run:
+```bash
+grep -n "click_groups\|regular_groups\|target_tempo\|target_actual\|\.factor\b" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: no output. (Task 9 rewrites the main queue body, the last remaining user.)
+
+- [ ] **Step 6: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Group queue by base tempo only; drop click/target-tempo paths"
+```
+
+---
+
+## Task 8: Rewrite the GFX grid to 4 columns (On/Grp/Region/Base)
+
+The grid (`prompt_per_region_settings`, source lines 1008–1594) is the largest block. Rewrite it to: (a) build rows carrying only identity + base + enabled, (b) render 4 columns, (c) keep Queue / Dry Run / Sort / Cancel / Save / Load / Copy Last To Selected buttons, (d) drop Fill Down and Copy To All buttons and the Min/Max/Step/Click edit paths.
+
+`assign_regular_row_group_ids` (source lines 819–839) groups by base+start+end+step; simplify it to base-only so the grid's `Grp` column stays meaningful.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` — `assign_regular_row_group_ids` (source lines 819–839) and `prompt_per_region_settings` (source lines 1008–1594)
+
+- [ ] **Step 1: Simplify `regular_row_group_key` and `assign_regular_row_group_ids`**
+
+`regular_row_group_key` (source lines 806–817) currently keys on base+start+end+step. Replace:
+```lua
+local function regular_row_group_key(row)
+    if not row_is_enabled(row) then
+        return "disabled"
+    end
+
+    return table.concat({
+        numeric_group_key(row.base_tempo),
+        numeric_group_key(row.start_tempo),
+        numeric_group_key(row.end_tempo),
+        numeric_group_key(row.step)
+    }, "|")
+end
+```
+with:
+```lua
+local function regular_row_group_key(row)
+    if not row_is_enabled(row) then
+        return "disabled"
+    end
+
+    return numeric_group_key(row.base_tempo)
+end
+```
+
+- [ ] **Step 2: Replace the entire `prompt_per_region_settings` function**
+
+Replace the whole function (source lines 1008–1594) with:
+```lua
+local function prompt_per_region_settings(
+    proj,
+    regions,
+    tempo_multiplier
+)
+    local rows = {}
+    for i = 1, #regions do
+        local region = regions[i]
+        local base_actual = reaper.TimeMap2_GetDividedBpmAtTime(proj, region.pos)
+        local base_tempo = base_actual / tempo_multiplier
+        rows[i] = {
+            internal_index = region.internal_index,
+            marker = region.marker,
+            pos = region.pos,
+            rgnend = region.rgnend,
+            name = region.name,
+            number = region.number,
+            base_tempo = base_tempo,
+            enabled = true
+        }
+    end
+
+    local title = string.format("Region Solo-Cue Grid (%d regions)", #rows)
+    local win_w = 760
+    local win_h = 760
+    gfx.init(title, win_w, win_h)
+    gfx.setfont(1, "Arial", 16)
+
+    local selected_row = 1
+    local selected_col = 4
+    local scroll_row = 1
+    local last_left_down = false
+    local last_click_time = 0
+    local last_click_row = -1
+    local last_click_col = -1
+    local last_entry = nil
+    local message = ""
+
+    local function set_message(text)
+        message = text or ""
+    end
+
+    local function clamp_scroll(visible_count)
+        if scroll_row < 1 then
+            scroll_row = 1
+        end
+        local max_scroll = math.max(1, #rows - visible_count + 1)
+        if scroll_row > max_scroll then
+            scroll_row = max_scroll
+        end
+    end
+
+    local function validate_row(row)
+        if row.base_tempo <= 0 then
+            return false, "Base tempo must be > 0"
+        end
+        return true, nil
+    end
+
+    local function snapshot_entry(row)
+        return {
+            base_tempo = row.base_tempo
+        }
+    end
+
+    local function apply_entry_except_base(row, entry)
+        -- Only Base is user-set; nothing else to copy. Kept for API parity with Load.
+    end
+
+    local function row_storage_key(row)
+        return table.concat({
+            tostring(row.number or -1),
+            string.format("%.9f", row.pos or 0),
+            string.format("%.9f", row.rgnend or 0),
+            sanitize_name_for_storage(row.name):lower()
+        }, "|")
+    end
+
+    local function validate_all_rows()
+        for i = 1, #rows do
+            local ok, err = validate_row(rows[i])
+            if not ok then
+                return false, string.format("Row %d invalid: %s", i, err)
+            end
+        end
+        return true, nil
+    end
+
+    local function validate_enabled_rows()
+        local enabled_count = 0
+        for i = 1, #rows do
+            if row_is_enabled(rows[i]) then
+                enabled_count = enabled_count + 1
+                local ok, err = validate_row(rows[i])
+                if not ok then
+                    return false, string.format("Row %d invalid: %s", i, err)
+                end
+            end
+        end
+
+        if enabled_count == 0 then
+            return false, "No rows are enabled."
+        end
+
+        return true, nil
+    end
+
+    local function sort_rows_for_queue()
+        table.sort(rows, function(a, b)
+            if row_is_enabled(a) ~= row_is_enabled(b) then
+                return row_is_enabled(a)
+            end
+            if numeric_group_key(a.base_tempo) ~= numeric_group_key(b.base_tempo) then
+                return (a.base_tempo or 0) < (b.base_tempo or 0)
+            end
+            if (a.pos or 0) ~= (b.pos or 0) then
+                return (a.pos or 0) < (b.pos or 0)
+            end
+            return (a.name or "") < (b.name or "")
+        end)
+
+        selected_row = math.min(selected_row, #rows)
+        scroll_row = math.min(scroll_row, math.max(1, #rows))
+        set_message("Sorted rows by On, Base.")
+    end
+
+    local function confirm_queue_options()
+        local ok, err = validate_enabled_rows()
+        if not ok then
+            set_message(err)
+            return nil
+        end
+
+        local plan = build_queue_summary(rows, tempo_multiplier)
+        local preview_response = reaper.ShowMessageBox(
+            plan.summary_text .. "\n\nPress OK to continue to existing-file handling.",
+            "Queue Preview",
+            1
+        )
+        if preview_response ~= 1 then
+            set_message("Queue cancelled.")
+            return nil
+        end
+
+        local existing_response = reaper.ShowMessageBox(
+            "Existing-file handling:\n\nYes = queue all planned groups\nNo = skip likely existing output files\nCancel = abort",
+            "Existing Files",
+            3
+        )
+        if existing_response == 2 then
+            set_message("Queue cancelled.")
+            return nil
+        end
+
+        return {
+            skip_existing = existing_response == 7
+        }
+    end
+
+    local function dry_run_queue()
+        local ok, err = validate_enabled_rows()
+        if not ok then
+            set_message(err)
+            return
+        end
+
+        reaper.ShowConsoleMsg("")
+        local plan = log_queue_plan(rows, tempo_multiplier, "=== DRY RUN: solo-cue queue plan ===")
+        reaper.ShowMessageBox(plan.summary_text, "Dry Run Queue Plan", 0)
+        set_message("Dry run written to console; no queue entries added.")
+    end
+
+    local function copy_last_to_row(row_idx)
+        if not last_entry then
+            set_message("Nothing to copy yet. Edit one row first.")
+            return
+        end
+        rows[row_idx].base_tempo = last_entry.base_tempo
+        set_message(string.format("Copied last Base to row %d", row_idx))
+    end
+
+    local function save_piece_settings()
+        local ok, err = validate_all_rows()
+        if not ok then
+            set_message(err)
+            return
+        end
+
+        reaper.SetProjExtState(proj, EXT_SECTION, SAVED_REGION_ROWS_KEY, serialize_region_rows(rows))
+        set_message(string.format("Saved settings for %d rows", #rows))
+    end
+
+    local function load_piece_settings()
+        local has_saved, blob = reaper.GetProjExtState(proj, EXT_SECTION, SAVED_REGION_ROWS_KEY)
+        if has_saved ~= 1 or not blob or blob == "" then
+            set_message("No saved settings for this project.")
+            return
+        end
+
+        local saved_rows = deserialize_region_rows(blob)
+        if #saved_rows == 0 then
+            set_message("Saved settings are empty.")
+            return
+        end
+
+        local by_key = {}
+        for i = 1, #saved_rows do
+            by_key[row_storage_key(saved_rows[i])] = saved_rows[i]
+        end
+
+        local loaded = 0
+        for i = 1, #rows do
+            local saved = by_key[row_storage_key(rows[i])]
+            if saved then
+                rows[i].base_tempo = saved.base_tempo
+                loaded = loaded + 1
+            end
+        end
+
+        if loaded > 0 then
+            last_entry = snapshot_entry(rows[selected_row])
+            set_message(string.format("Loaded Base for %d rows", loaded))
+        else
+            set_message("No saved rows matched current regions.")
+        end
+    end
+
+    local function draw_button(x, y, w, h, label)
+        local mx = gfx.mouse_x
+        local my = gfx.mouse_y
+        local inside = mx >= x and mx <= x + w and my >= y and my <= y + h
+        if inside then
+            gfx.set(0.32, 0.32, 0.38, 1)
+        else
+            gfx.set(0.22, 0.22, 0.28, 1)
+        end
+        gfx.rect(x, y, w, h, 1)
+        gfx.set(1, 1, 1, 1)
+        gfx.x = x + 10
+        gfx.y = y + 8
+        gfx.drawstr(label)
+        return inside
+    end
+
+    local function edit_base_cell(row_idx)
+        local row = rows[row_idx]
+        local ok, out = reaper.GetUserInputs(
+            string.format("Edit Base tempo (Row %d)", row_idx),
+            1,
+            "Base tempo",
+            tostring(row.base_tempo)
+        )
+        if not ok then
+            return
+        end
+
+        local val = tonumber(trim_string(out))
+        if not val then
+            set_message("Invalid number.")
+            return
+        end
+
+        row.base_tempo = val
+        local valid, err = validate_row(row)
+        if not valid then
+            set_message(err)
+            return
+        end
+        last_entry = snapshot_entry(row)
+        set_message(string.format("Updated row %d", row_idx))
+    end
+
+    local function toggle_enabled_cell(row_idx)
+        local row = rows[row_idx]
+        row.enabled = not row_is_enabled(row)
+        set_message(string.format("Row %d %s", row_idx, row.enabled and "enabled" or "disabled"))
+    end
+
+    local function ui_loop()
+        local w = gfx.w
+        local h = gfx.h
+        gfx.set(0.1, 0.1, 0.12, 1)
+        gfx.rect(0, 0, w, h, 1)
+
+        local top_y = 12
+        local btn_h = 32
+        local bx = 16
+        local queue_hover = draw_button(bx, top_y, 110, btn_h, "Queue")
+        local dry_run_hover = draw_button(bx + 122, top_y, 110, btn_h, "Dry Run")
+        local sort_hover = draw_button(bx + 244, top_y, 140, btn_h, "Sort For Queue")
+        local cancel_hover = draw_button(bx + 396, top_y, 110, btn_h, "Cancel")
+        local save_hover = draw_button(bx + 518, top_y, 80, btn_h, "Save")
+        local load_hover = draw_button(bx + 610, top_y, 80, btn_h, "Load")
+
+        local row2_y = top_y + 42
+        local copy_hover = draw_button(bx, row2_y, 220, btn_h, "Copy Last To Selected")
+
+        gfx.set(1, 1, 1, 1)
+        gfx.x = 16
+        gfx.y = top_y + 82
+        gfx.drawstr("Double-click Base to edit. Click On to toggle. Mouse wheel scrolls rows.")
+
+        local table_x = 16
+        local table_y = top_y + 116
+        local row_h = 28
+        local col_w = { 54, 58, 330, 120 }
+        local col_name = { "On", "Grp", "Region", "Base" }
+        local row_group_ids = assign_regular_row_group_ids(rows)
+
+        local data_top = table_y + row_h
+        local visible_rows = math.max(1, math.floor((h - data_top - 70) / row_h))
+        clamp_scroll(visible_rows)
+
+        local x = table_x
+        for c = 1, #col_w do
+            gfx.set(0.2, 0.2, 0.24, 1)
+            gfx.rect(x, table_y, col_w[c], row_h, 1)
+            gfx.set(1, 1, 1, 1)
+            gfx.x = x + 8
+            gfx.y = table_y + 6
+            gfx.drawstr(col_name[c])
+            x = x + col_w[c]
+        end
+
+        for vr = 1, visible_rows do
+            local row_idx = scroll_row + vr - 1
+            if row_idx > #rows then
+                break
+            end
+            local row = rows[row_idx]
+            local y = data_top + (vr - 1) * row_h
+            local cx = table_x
+
+            local region_title = row.name ~= "" and row.name or "(unnamed)"
+            local region_cell = string.format("%02d  #%d  %s", row_idx, row.number or -1, region_title)
+            local values = {
+                row_is_enabled(row) and "Y" or "N",
+                row_is_enabled(row) and ("G" .. tostring(row_group_ids[row_idx] or "-")) or "-",
+                region_cell,
+                string.format("%g", row.base_tempo)
+            }
+
+            for c = 1, #col_w do
+                if row_idx == selected_row and c == selected_col then
+                    gfx.set(0.24, 0.34, 0.50, 1)
+                elseif not row_is_enabled(row) then
+                    gfx.set(0.09, 0.09, 0.105, 1)
+                else
+                    if row_idx % 2 == 0 then
+                        gfx.set(0.14, 0.14, 0.17, 1)
+                    else
+                        gfx.set(0.12, 0.12, 0.15, 1)
+                    end
+                end
+                gfx.rect(cx, y, col_w[c], row_h, 1)
+                if not row_is_enabled(row) then
+                    gfx.set(0.55, 0.55, 0.58, 1)
+                else
+                    gfx.set(1, 1, 1, 1)
+                end
+                gfx.x = cx + 8
+                gfx.y = y + 6
+                gfx.drawstr(values[c])
+                cx = cx + col_w[c]
+            end
+        end
+
+        local footer_y = h - 52
+        gfx.set(0.16, 0.16, 0.2, 1)
+        gfx.rect(0, footer_y, w, 52, 1)
+        gfx.set(1, 1, 1, 1)
+        gfx.x = 16
+        gfx.y = footer_y + 8
+        gfx.drawstr(string.format(
+            "Rows: %d   Enabled: %d   Visible: %d   Scroll: %d",
+            #rows,
+            count_enabled_rows(rows),
+            visible_rows,
+            scroll_row
+        ))
+        gfx.x = 16
+        gfx.y = footer_y + 28
+        gfx.drawstr(message)
+
+        gfx.update()
+        local char = gfx.getchar()
+        if char < 0 then
+            gfx.quit()
+            return nil
+        end
+        if char == 27 then
+            gfx.quit()
+            return nil
+        end
+
+        local wheel = gfx.mouse_wheel
+        if wheel ~= 0 then
+            if wheel > 0 then
+                scroll_row = scroll_row - 1
+            else
+                scroll_row = scroll_row + 1
+            end
+            gfx.mouse_wheel = 0
+        end
+
+        local left_down = (gfx.mouse_cap % 2) == 1
+        if left_down and not last_left_down then
+            local mx = gfx.mouse_x
+            local my = gfx.mouse_y
+
+            if queue_hover then
+                local options = confirm_queue_options()
+                if options then
+                    gfx.quit()
+                    queue_pending_rows_and_continue(proj, rows, options)
+                    return nil
+                end
+            elseif dry_run_hover then
+                dry_run_queue()
+            elseif sort_hover then
+                sort_rows_for_queue()
+            elseif cancel_hover then
+                gfx.quit()
+                return nil
+            elseif copy_hover then
+                copy_last_to_row(selected_row)
+            elseif save_hover then
+                save_piece_settings()
+            elseif load_hover then
+                load_piece_settings()
+            else
+                local data_top_y = top_y + 116 + row_h
+                if my >= data_top_y and my < data_top_y + visible_rows * row_h then
+                    local vr = math.floor((my - data_top_y) / row_h) + 1
+                    local row_idx = scroll_row + vr - 1
+                    if row_idx >= 1 and row_idx <= #rows then
+                        local col = 1
+                        local cx = table_x
+                        for c = 1, #col_w do
+                            if mx >= cx and mx <= cx + col_w[c] then
+                                col = c
+                                break
+                            end
+                            cx = cx + col_w[c]
+                        end
+
+                        selected_row = row_idx
+                        selected_col = col
+
+                        local now = reaper.time_precise()
+                        local is_double_click =
+                            row_idx == last_click_row and
+                            col == last_click_col and
+                            (now - last_click_time) <= 0.4
+
+                        if col == 1 then
+                            toggle_enabled_cell(row_idx)
+                        elseif col == 4 and is_double_click then
+                            edit_base_cell(row_idx)
+                        end
+
+                        last_click_time = now
+                        last_click_row = row_idx
+                        last_click_col = col
+                    end
+                end
+            end
+        end
+
+        last_left_down = left_down
+        reaper.defer(ui_loop)
+    end
+
+    reaper.defer(function()
+        ui_loop()
+    end)
+
+    return nil, "pending"
+end
+```
+
+- [ ] **Step 3: Confirm removed symbols have no remaining references**
+
+Run:
+```bash
+grep -n "edit_number_cell\|toggle_click_cell\|copy_last_to_all_rows\|fill_hover\|copy_all_hover\|render_click\|start_tempo\|end_tempo\|\.step\b" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: no output. (The `main` body still references some of these until Task 9; if `main` shows up here, that's expected and removed next. Re-run after Task 9 and expect zero.)
+
+- [ ] **Step 4: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Slim GFX grid to On/Grp/Region/Base columns"
+```
+
+---
+
+## Task 9: Rewrite `main` to the solo-cue queue flow
+
+This is the core behavior change. Replace `main` so it: resolves the SOLO track up front (abort if missing), captures tempo/render/region-selection/track-selection/**all tracks' B_SOLO** state, then for each base-tempo group restores the tempo map, forces each region's base marker, true-solos the SOLO track, applies the SOLO_CUE preset, sets the SOLO_CUE pattern, filters existing outputs, selects active regions, and queues. Restore happens unconditionally after the xpcall.
+
+The tempo-map scale helper (`scale_tempo_map`) and `enforce_region_start_base_tempo` are no longer needed; delete them here too.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua` — delete `scale_tempo_map` (source lines 463–497) and `enforce_region_start_base_tempo` (source lines 667–680); rewrite `main` (source lines 1828–2343)
+
+- [ ] **Step 1: Delete `scale_tempo_map`**
+
+Delete the whole function (source lines 463–497), including its leading comment line if present.
+
+- [ ] **Step 2: Delete `enforce_region_start_base_tempo`**
+
+Delete the whole function (source lines 667–680).
+
+- [ ] **Step 3: Add solo-state capture/apply/restore helpers**
+
+Insert these three functions immediately **before** `main` (i.e., right after the `region_rows_label` / `log_existing_output_result` helpers, before `main = function()`):
+
+```lua
+local function capture_all_track_solo_state(proj)
+    local state = {}
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        state[#state + 1] = {
+            track = track,
+            solo = reaper.GetMediaTrackInfo_Value(track, "B_SOLO")
+        }
+    end
+    return state
+end
+
+local function restore_track_solo_state(state)
+    if not state then
+        return
+    end
+    for i = 1, #state do
+        local entry = state[i]
+        if entry.track and reaper.ValidatePtr2(0, entry.track, "MediaTrack*") then
+            reaper.SetMediaTrackInfo_Value(entry.track, "B_SOLO", entry.solo or 0)
+        end
+    end
+end
+
+local function true_solo_track(proj, solo_track)
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        local value = (track == solo_track) and 2 or 0
+        reaper.SetMediaTrackInfo_Value(track, "B_SOLO", value)
+    end
+end
+```
+
+- [ ] **Step 4: Replace the entire `main` function**
+
+Replace the whole `main = function() ... end` block (source lines 1828–2343) with:
+
+```lua
+main = function()
+    local proj = 0
+
+    if not ADD_TO_QUEUE_CMD or ADD_TO_QUEUE_CMD <= 0 then
+        reaper.ShowMessageBox(
+            "ADD_TO_QUEUE_CMD invalid. Check 'File: Add project to render queue, using the most recent render settings'.",
+            "Error",
+            0
+        )
+        return
+    end
+
+    local base_default, multiplier_default, _per_region_mode_default, per_region_selected_only_default,
+    region_name_filter_default = load_last_params(proj)
+
+    local base_tempo = base_default
+    local tempo_multiplier = multiplier_default
+    local per_region_mode = true
+    local per_region_selected_only = GFX_DIRECT_SELECTED_ONLY or per_region_selected_only_default
+    local region_name_filter = region_name_filter_default
+
+    if not (base_tempo and tempo_multiplier) then
+        reaper.ShowMessageBox(
+            "Saved defaults are invalid. Run the script once to set valid defaults.",
+            "Error",
+            0
+        )
+        return
+    end
+
+    if base_tempo <= 0 or tempo_multiplier <= 0 then
+        reaper.ShowMessageBox("Base tempo and multiplier must be greater than zero.", "Error", 0)
+        return
+    end
+
+    save_last_params(
+        proj,
+        base_tempo,
+        tempo_multiplier,
+        per_region_mode,
+        per_region_selected_only,
+        region_name_filter
+    )
+
+    local solo_track = find_solo_track(proj)
+    if not solo_track then
+        reaper.ShowMessageBox(
+            "SOLO track not found (track name containing '" .. SOLO_TRACK_NAME .. "').",
+            "Error",
+            0
+        )
+        return
+    end
+
+    local per_region_configs = nil
+    local region_selection_scope = "all regions"
+    local pending_rows = nil
+    local queue_options = {
+        skip_existing = false
+    }
+    do
+        local has_pending, pending_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY)
+        if has_pending == 1 and pending_blob and pending_blob ~= "" then
+            pending_rows = deserialize_region_rows(pending_blob)
+            reaper.SetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY, "")
+            region_selection_scope = string.format("queued grid rows (%d)", #pending_rows)
+        end
+
+        local has_options, options_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_QUEUE_OPTIONS_KEY)
+        if has_options == 1 and options_blob and options_blob ~= "" then
+            queue_options = deserialize_queue_options(options_blob)
+            reaper.SetProjExtState(proj, EXT_SECTION, PENDING_QUEUE_OPTIONS_KEY, "")
+        end
+    end
+
+    if per_region_mode then
+        if pending_rows and #pending_rows > 0 then
+            per_region_configs = pending_rows
+        else
+            local regions = collect_regions_with_handles(proj)
+            if per_region_selected_only then
+                local filtered = {}
+                for i = 1, #regions do
+                    if regions[i].selected then
+                        filtered[#filtered + 1] = regions[i]
+                    end
+                end
+                if #filtered > 0 then
+                    region_selection_scope = string.format("selected regions (%d of %d)", #filtered, #regions)
+                    regions = filtered
+                else
+                    region_selection_scope = string.format("all regions (%d; none selected)", #regions)
+                end
+            else
+                region_selection_scope = string.format("all regions (%d)", #regions)
+            end
+            if #regions == 0 then
+                reaper.ShowMessageBox("No regions found in the project.", "Error", 0)
+                return
+            end
+            local configs, err = prompt_per_region_settings(
+                proj,
+                regions,
+                tempo_multiplier
+            )
+            if not configs then
+                if err and err ~= "pending" and err ~= "cancelled" then
+                    reaper.ShowMessageBox(err, "Error", 0)
+                end
+                return
+            end
+            per_region_configs = configs
+        end
+    end
+
+    reaper.Undo_BeginBlock()
+
+    local markers_original = capture_tempo_map(proj)
+    local original_render_state = capture_render_state(proj)
+    local original_region_selection = capture_region_selection(proj)
+
+    local prev_sel = {}
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local tr = reaper.GetTrack(proj, i)
+        if reaper.IsTrackSelected(tr) then
+            prev_sel[#prev_sel + 1] = tr
+        end
+    end
+
+    local original_solo_state = capture_all_track_solo_state(proj)
+
+    local _, solo_name = reaper.GetTrackName(solo_track, "")
+
+    local function restore_original_state()
+        restore_tempo_map(proj, markers_original)
+        restore_render_state(proj, original_render_state)
+        restore_region_selection(proj, original_region_selection)
+
+        reaper.Main_OnCommand(40297, 0)
+        for i = 1, #prev_sel do
+            reaper.SetTrackSelected(prev_sel[i], true)
+        end
+
+        restore_track_solo_state(original_solo_state)
+
+        reaper.UpdateArrange()
+    end
+
+    local function format_traceback(err)
+        if debug and debug.traceback then
+            return debug.traceback(tostring(err), 2)
+        end
+        return tostring(err)
+    end
+
+    local ok, err = xpcall(function()
+        reaper.ShowConsoleMsg("")
+        log("=== soloCue render - queue ===")
+        log(string.format("SOLO track: %s", solo_name or "<unnamed>"))
+        log(string.format("Base tempo: %g (REAPER: %g)", base_tempo, base_tempo * tempo_multiplier))
+        log(string.format("Tempo multiplier: %g", tempo_multiplier))
+        log(string.format("Render pattern base: %s", SOLO_CUE_PATTERN_BASE))
+        log("Per-Region Settings Mode: " .. (per_region_mode and "YES" or "NO"))
+        log("Region Selection Scope: " .. region_selection_scope)
+        log("--------------------------------------")
+
+        if per_region_mode then
+            reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+
+            local queue_plan = build_queue_summary(per_region_configs, tempo_multiplier)
+            local groups = queue_plan.groups
+            local queued_count = 0
+            local queued_region_count = 0
+            local skipped_existing_count = 0
+            local stopped_early = false
+
+            log(queue_plan.summary_text)
+            log("Existing-file skip: " .. (queue_options.skip_existing and "YES" or "NO"))
+            if #groups > 0 then
+                log("Planned groups:")
+                for group_index = 1, #groups do
+                    log(string.format("  G%d: %s", group_index, describe_group(groups[group_index])))
+                end
+            end
+
+            if not command_is_configured(CMD_APPLY_SOLO_CUE) then
+                log("SOLO_CUE preset action not configured. Skipping all renders.")
+                stopped_early = true
+            else
+                for group_index = 1, #groups do
+                    local group = groups[group_index]
+
+                    restore_tempo_map(proj, markers_original)
+                    for region_index = 1, #group.regions do
+                        local cfg = group.regions[region_index]
+                        ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
+                    end
+
+                    true_solo_track(proj, solo_track)
+
+                    restore_render_state(proj, original_render_state)
+                    if not apply_preset(CMD_APPLY_SOLO_CUE, "SOLO_CUE") then
+                        log("Stopping: failed to apply SOLO_CUE preset.")
+                        stopped_early = true
+                        break
+                    end
+
+                    local solo_pattern = with_tempo_suffix(SOLO_CUE_PATTERN_BASE, group.base_suffix)
+                    set_render_pattern(proj, solo_pattern)
+                    local active_regions, existing, unchecked = filter_regions_for_existing_outputs(
+                        proj,
+                        solo_pattern,
+                        group.regions,
+                        queue_options.skip_existing
+                    )
+                    log_existing_output_result(
+                        string.format("Group %d", group_index),
+                        existing,
+                        unchecked,
+                        queue_options.skip_existing
+                    )
+                    skipped_existing_count = skipped_existing_count + (#group.regions - #active_regions)
+
+                    if #active_regions == 0 then
+                        log(string.format("Group %d SKIP: all likely outputs already exist.", group_index))
+                    else
+                        select_regions(proj, active_regions)
+                        reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+                        commit_tempo_map_changes(proj)
+                        reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                        reaper.UpdateArrange()
+                        queued_count = queued_count + 1
+                        queued_region_count = queued_region_count + #active_regions
+                        log(string.format(
+                            "Group %d QUEUED: %s (%s), base %g -> %s",
+                            group_index,
+                            region_rows_label(active_regions),
+                            region_count_label(#active_regions),
+                            group.base_tempo,
+                            solo_pattern
+                        ))
+                    end
+                end
+            end
+
+            log("--------------------------------------")
+            log(string.format(
+                "Per-region queue %s. Queue entries: %d (%d regions), skipped existing region outputs: %d.",
+                stopped_early and "stopped early" or "complete",
+                queued_count,
+                queued_region_count,
+                skipped_existing_count
+            ))
+        end
+    end, format_traceback)
+
+    restore_original_state()
+    reaper.Undo_EndBlock("soloCue render - queue", -1)
+
+    if not ok then
+        log("--------------------------------------")
+        log("ERROR: " .. tostring(err))
+        reaper.ShowMessageBox(
+            "soloCue render stopped after an error. Original project state was restored.\n\n" .. tostring(err),
+            "Error",
+            0
+        )
+        return
+    end
+
+    log("--------------------------------------")
+    log("Done. Queue entries added.")
+    log("Original tempo map, render settings, region selection, track selection, and solo state restored.")
+end
+```
+
+- [ ] **Step 5: Confirm all stale references are gone**
+
+Run:
+```bash
+grep -n "find_click_track\|click_track\|clicktrack\|CLICKTRACK\|CMD_APPLY_GPHIL_CLICK\|CMD_APPLY_GPHIL_RENDER\|CLICK_PATTERN_BASE\|RENDER_PATTERN_BASE\|scale_tempo_map\|enforce_region_start_base_tempo\|render_click\|force_region_base\|start_tempo\|end_tempo\b\|target_tempo\|target_actual\|\.factor\|original_click_mute" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: no output. If anything prints, remove that reference before proceeding.
+
+Also confirm the two helpers you kept are still defined and used:
+```bash
+grep -n "ensure_tempo_marker_at_time\|commit_tempo_map_changes" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+```
+Expected: each appears at least once as a definition and once as a call.
+
+- [ ] **Step 6: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Rewrite main to solo-cue queue flow with B_SOLO isolation"
+```
+
+---
+
+## Task 10: Verify the finished script compiles and clean up dead helpers
+
+A few helpers from the source may now be unused (e.g. the metronome-pattern helpers, the tempo-marker-flag helpers, and possibly `collect_region_start_positions` / `parse_list` if region filtering is the only caller). Remove only the ones that are truly dead, to keep the file honest. Keep anything still referenced.
+
+**Files:**
+- Modify: `GPhil_soloCue_render_gfx_direct.lua`
+
+- [ ] **Step 1: Compile-check the current state**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 2: Hunt for dead helpers**
+
+For each of the following symbols, check whether it has any reference besides its own definition. A symbol with only one occurrence (its definition) is dead.
+
+Candidates to check:
+```bash
+for sym in TEMPO_MARKER_FLAG_METRONOME_PATTERN TEMPO_MARKER_FLAGS flag_is_set get_tempo_marker_flags set_tempo_marker_flags get_metronome_pattern set_metronome_pattern find_tempo_marker_at_time collect_region_start_positions region_matches_filter parse_list numeric_group_key tempo_suffix_value with_tempo_suffix; do
+  echo "=== $sym ==="
+  grep -n "$sym" /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua
+done
+```
+
+- [ ] **Step 3: Remove only the truly-dead helpers**
+
+Decision rule (apply per symbol from Step 2):
+- If the symbol appears exactly once (its definition) → delete the definition.
+- If it appears more than once → keep it.
+
+Known-likely-dead (verify with the grep first, then delete if single-occurrence):
+- `TEMPO_MARKER_FLAG_METRONOME_PATTERN`, `TEMPO_MARKER_FLAGS`, `flag_is_set`, `get_tempo_marker_flags`, `set_tempo_marker_flags` (metronome/flag helpers — the source used these for click-tempo alignment; the solo flow does not).
+- `get_metronome_pattern`, `set_metronome_pattern` (same reason).
+- `find_tempo_marker_at_time` (used by source's step logic; verify single-occurrence before deleting).
+- `collect_region_start_positions`, `region_matches_filter`, `parse_list` — **check carefully**: `parse_list` may still be referenced by `collect_region_start_positions` only; if so, both are dead and both go. But `region_name_filter` is still plumbed through save/load even though nothing consumes it — that's acceptable (preserves the knob for future use); only delete `parse_list` if it has no remaining caller.
+
+Keep regardless (still used by `main` or the grid): `numeric_group_key`, `tempo_suffix_value`, `with_tempo_suffix`, `ensure_tempo_marker_at_time`, `commit_tempo_map_changes`, `capture_tempo_map`, `restore_tempo_map`, `sanitize_name_for_storage`.
+
+- [ ] **Step 4: Re-run the dead-symbol scan after deletions**
+
+Run the same loop from Step 2 and confirm every printed symbol now has ≥ 2 occurrences (definition + use) or was deleted.
+
+- [ ] **Step 5: Syntax-check**
+
+Run:
+```bash
+luac -p /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua && echo OK
+```
+Expected: `OK`.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add GPhil_soloCue_render_gfx_direct.lua
+git commit -m "Remove dead helpers from soloCue script"
+```
+
+---
+
+## Task 11: Deploy the script and verify the copy matches (AGENTS.md)
+
+Per AGENTS.md, after editing a `GPhil_*.lua` script, copy it into the deployed GPhil folder and verify the copy matches.
+
+**Files:**
+- Deploy: `/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/GPhil_soloCue_render_gfx_direct.lua`
+
+- [ ] **Step 1: Copy the script into the deployed folder**
+
+Run:
+```bash
+cp /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua \
+   "/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/GPhil_soloCue_render_gfx_direct.lua"
+```
+
+- [ ] **Step 2: Verify the deployed copy is byte-identical**
+
+Run:
+```bash
+diff -q /Volumes/DRIVE/DEV/reaper-scripts/GPhil_soloCue_render_gfx_direct.lua \
+        "/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/GPhil_soloCue_render_gfx_direct.lua" && echo IDENTICAL
+```
+Expected: `IDENTICAL`.
+
+- [ ] **Step 3: Confirm the deployed folder lists the new script**
+
+Run:
+```bash
+ls -1 "/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/" | grep soloCue
+```
+Expected: `GPhil_soloCue_render_gfx_direct.lua`.
+
+---
+
+## Task 12: Manual run sheet (REAPER, human-driven)
+
+REAPER scripts cannot be exercised headless, so verification finishes with a manual run. This is not a code task; it is the acceptance checklist the user (or engineer at the machine) performs once.
+
+- [ ] **Step 1: Preconditions**
+  - REAPER open with a project that has ≥ 2 regions with distinct base tempos.
+  - A track named `SOLO` (case-insensitive) exists with content under each region.
+  - The action `_RSb6214dfe2bae78d7d897e42e57450017be87e017` is registered (cfillion "Apply render preset" generated action) and points at a render preset bound to **region** bounds.
+  - Several other tracks are soloed and/or muted before running (to verify restore).
+
+- [ ] **Step 2: Run the script with no regions selected → grid shows all regions.**
+
+  Expected: grid opens, one row per region, `On=Y`, `Base` shows each region's detected tempo, `Grp` shows shared ids for equal bases.
+
+- [ ] **Step 3: Run with 1+ regions selected → grid shows only those regions.**
+
+  Expected: only the selected regions appear. (AGENTS.md rule.)
+
+- [ ] **Step 4: Double-click a Base cell → edit dialog → set a new value → cell updates.**
+
+- [ ] **Step 5: Click `Sort For Queue` → rows reorder by On then Base.**
+
+- [ ] **Step 6: Click `Save`, change a Base, click `Load` → Base reverts to saved value for matched rows.**
+
+- [ ] **Step 7: Click `Dry Run` → console shows the plan; nothing is queued.**
+
+- [ ] **Step 8: Click `Queue` → confirm preview → choose Yes (queue all).**
+
+  Expected per group in console:
+  - `Group N QUEUED: ... base <bpm> -> AUDIO/SOLO_CUE/<region>/<project>_<region>_SOLO_CUE_<bpm>`
+  - Only the SOLO track is soloed during each render (visually: SOLO button lit, others off).
+  - Render queue gains one entry per distinct base tempo.
+
+- [ ] **Step 9: After completion, verify state restored:**
+  - Tempo map unchanged vs. before run.
+  - Original region selection restored.
+  - Original track selection restored.
+  - **Every track's solo state restored** to what it was before the run (the tracks that were soloed/muted before are soloed/muted again).
+
+- [ ] **Step 10: Open the rendered files** under the project's `AUDIO/SOLO_CUE/<region>/` folder and confirm each contains only the SOLO track's audio at the correct base tempo.
+
+- [ ] **Step 11: Negative test — temporarily rename the SOLO track, re-run.**
+
+  Expected: error dialog "SOLO track not found ...", script aborts, no state changed.
+
+---
+
+## Self-Review (completed by plan author)
+
+**Spec coverage:**
+- Track name `"SOLO"`, true REAPER solo via `B_SOLO=2`, restore all tracks → Task 9 (helpers + main) ✓
+- No clicktrack references → Tasks 4 & 9 (delete + grep guard) ✓
+- Single preset `_RSb6214dfe2bae78d7d897e42e57450017be87e017` → Task 2 ✓
+- Pattern `AUDIO/SOLO_CUE/$region/$project_$region_SOLO_CUE_120` → Task 2 ✓
+- One render per region at base tempo, grouped by base → Tasks 7 & 9 ✓
+- Slim 4-column GFX grid (On/Grp/Region/Base), keep Queue/Dry Run/Sort/Cancel/Save/Load/Copy Last → Task 8 ✓
+- Region selection scope rule (selected-only when some selected) → Task 9 (preserved from source) ✓
+- Save/Load semantics → Tasks 5 & 8 ✓
+- Distinct ProjExtState section `renderSoloCue` → Task 2 ✓
+- State restore on success and error (xpcall + post-xpcall restore) → Task 9 ✓
+- Deploy + verify copy → Task 11 ✓
+
+**Placeholder scan:** No TBD/TODO/"add error handling" steps. Every code step contains the literal code. The dead-helper task (Task 10) is intentionally conditional but gives an exact decision rule and grep.
+
+**Type/name consistency:** `find_solo_track`, `capture_all_track_solo_state`, `restore_track_solo_state`, `true_solo_track`, `CMD_APPLY_SOLO_CUE`, `SOLO_CUE_PATTERN_BASE`, `SOLO_TRACK_NAME`, `EXT_SECTION="renderSoloCue"`, `queue_plan.groups` (not `click_groups`/`regular_groups`) — names match across all tasks.
+
+**Scope:** Single script, single feature, deployable on its own. Not decomposed further.
