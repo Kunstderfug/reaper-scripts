@@ -1427,40 +1427,6 @@ local function log_existing_output_result(label, existing, unchecked, skip_exist
     end
 end
 
-local function capture_all_track_solo_state(proj)
-    local state = {}
-    local track_count = reaper.CountTracks(proj)
-    for i = 0, track_count - 1 do
-        local track = reaper.GetTrack(proj, i)
-        state[#state + 1] = {
-            track = track,
-            solo = reaper.GetMediaTrackInfo_Value(track, "B_SOLO")
-        }
-    end
-    return state
-end
-
-local function restore_track_solo_state(state)
-    if not state then
-        return
-    end
-    for i = 1, #state do
-        local entry = state[i]
-        if entry.track and reaper.ValidatePtr2(0, entry.track, "MediaTrack*") then
-            reaper.SetMediaTrackInfo_Value(entry.track, "B_SOLO", entry.solo or 0)
-        end
-    end
-end
-
-local function true_solo_track(proj, solo_track)
-    local track_count = reaper.CountTracks(proj)
-    for i = 0, track_count - 1 do
-        local track = reaper.GetTrack(proj, i)
-        local value = (track == solo_track) and 2 or 0
-        reaper.SetMediaTrackInfo_Value(track, "B_SOLO", value)
-    end
-end
-
 main = function()
     local proj = 0
 
@@ -1591,8 +1557,6 @@ main = function()
         end
     end
 
-    local original_solo_state = capture_all_track_solo_state(proj)
-
     local _, solo_name = reaper.GetTrackName(solo_track, "")
 
     local function restore_original_state()
@@ -1604,8 +1568,6 @@ main = function()
         for i = 1, #prev_sel do
             reaper.SetTrackSelected(prev_sel[i], true)
         end
-
-        restore_track_solo_state(original_solo_state)
 
         reaper.UpdateArrange()
     end
@@ -1660,7 +1622,11 @@ main = function()
                         ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
                     end
 
-                    true_solo_track(proj, solo_track)
+                    -- Isolate the SOLO track via track SELECTION (not B_SOLO):
+                    -- the SOLO_CUE preset renders only selected tracks within the region bound,
+                    -- matching how the source script isolates the click track.
+                    reaper.Main_OnCommand(40297, 0) -- unselect all tracks
+                    reaper.SetTrackSelected(solo_track, true)
 
                     restore_render_state(proj, original_render_state)
                     if not apply_preset(CMD_APPLY_SOLO_CUE, "SOLO_CUE") then
@@ -1703,6 +1669,12 @@ main = function()
                             group.base_tempo,
                             solo_pattern
                         ))
+                    end
+
+                    -- Restore track selection between groups so the next group starts clean.
+                    reaper.Main_OnCommand(40297, 0)
+                    for tr_i = 1, #prev_sel do
+                        reaper.SetTrackSelected(prev_sel[tr_i], true)
                     end
                 end
             end
