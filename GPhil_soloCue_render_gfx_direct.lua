@@ -153,10 +153,6 @@ local function serialize_region_rows(rows)
             sanitize_name_for_storage(row.name),
             tostring(row.number or -1),
             tostring(row.base_tempo or 0),
-            tostring(row.start_tempo or 0),
-            tostring(row.step or 0),
-            tostring(row.end_tempo or 0),
-            row.render_click and "1" or "0",
             row_is_enabled(row) and "1" or "0"
         }, "\t")
     end
@@ -172,13 +168,13 @@ local function deserialize_region_rows(blob)
     for line in blob:gmatch("([^\n]+)") do
         local cols = {}
         for token in line:gmatch("([^\t]*)\t?") do
-            if token == "" and #cols >= 10 then
+            if token == "" and #cols >= 6 then
                 break
             end
             cols[#cols + 1] = token
         end
 
-        if #cols >= 10 then
+        if #cols >= 6 then
             rows[#rows + 1] = {
                 internal_index = tonumber(cols[1]) or -1,
                 pos = tonumber(cols[2]) or 0,
@@ -186,11 +182,7 @@ local function deserialize_region_rows(blob)
                 name = cols[4] or "",
                 number = tonumber(cols[5]) or -1,
                 base_tempo = tonumber(cols[6]) or 0,
-                start_tempo = tonumber(cols[7]) or 0,
-                step = tonumber(cols[8]) or 0,
-                end_tempo = tonumber(cols[9]) or 0,
-                render_click = cols[10] == "1",
-                enabled = cols[11] ~= "0"
+                enabled = cols[7] ~= "0"
             }
         end
     end
