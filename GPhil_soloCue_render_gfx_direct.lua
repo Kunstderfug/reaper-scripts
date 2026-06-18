@@ -433,42 +433,6 @@ local function restore_tempo_map(proj, state)
     end
 end
 
-local function scale_tempo_map(proj, tempo_state_original, factor)
-    if not factor or factor == 0 then
-        return
-    end
-
-    local markers_original = tempo_markers_from_state(tempo_state_original)
-
-    -- To mimic "Adjust entire tempo envelope" we not only scale BPM,
-    -- but also move tempo markers in time by the inverse factor so that
-    -- musical (beat) positions are preserved and the project stretches.
-    local time_scale = 1.0 / factor
-
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = cnt - 1, 0, -1 do
-        reaper.DeleteTempoTimeSigMarker(proj, i)
-    end
-
-    for i = 1, #markers_original do
-        local m = markers_original[i]
-        local new_bpm = m.bpm * factor
-        local new_timepos = m.timepos * time_scale
-        reaper.SetTempoTimeSigMarker(
-            proj, -1,
-            new_timepos,
-            m.measurepos,
-            m.beatpos,
-            new_bpm,
-            m.timesig_num,
-            m.timesig_denom,
-            m.lineartempo
-        )
-    end
-
-    commit_tempo_map_changes(proj)
-end
-
 -- Replace last "_<number>" with tempo_str; if none, append.
 local function with_tempo_suffix(pattern, tempo_str)
     local prefix, existing = pattern:match("^(.*)_(%d+)%s*$")
@@ -635,21 +599,6 @@ local function ensure_tempo_marker_at_time(proj, timepos, bpm)
         commit_tempo_map_changes(proj)
     end
     return ok
-end
-
-local function enforce_region_start_base_tempo(proj, region_starts, base_bpm)
-    if not region_starts or #region_starts == 0 then
-        return 0
-    end
-
-    local applied = 0
-    for i = 1, #region_starts do
-        if ensure_tempo_marker_at_time(proj, region_starts[i].pos, base_bpm) then
-            applied = applied + 1
-        end
-    end
-
-    return applied
 end
 
 local function get_region_name(proj, region_or_marker)
@@ -1621,6 +1570,40 @@ local function log_existing_output_result(label, existing, unchecked, skip_exist
     end
 end
 
+local function capture_all_track_solo_state(proj)
+    local state = {}
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        state[#state + 1] = {
+            track = track,
+            solo = reaper.GetMediaTrackInfo_Value(track, "B_SOLO")
+        }
+    end
+    return state
+end
+
+local function restore_track_solo_state(state)
+    if not state then
+        return
+    end
+    for i = 1, #state do
+        local entry = state[i]
+        if entry.track and reaper.ValidatePtr2(0, entry.track, "MediaTrack*") then
+            reaper.SetMediaTrackInfo_Value(entry.track, "B_SOLO", entry.solo or 0)
+        end
+    end
+end
+
+local function true_solo_track(proj, solo_track)
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        local value = (track == solo_track) and 2 or 0
+        reaper.SetMediaTrackInfo_Value(track, "B_SOLO", value)
+    end
+end
+
 main = function()
     local proj = 0
 
@@ -1633,25 +1616,18 @@ main = function()
         return
     end
 
-    local base_default, start_default, step_default, end_default, multiplier_default, render_click_default,
-    force_region_base_default, region_name_filter_default, _per_region_mode_default, per_region_selected_only_default =
-        load_last_params(proj)
+    local base_default, multiplier_default, _per_region_mode_default, per_region_selected_only_default,
+    region_name_filter_default = load_last_params(proj)
 
-    -- GFX-direct mode: no initial GetUserInputs dialog.
     local base_tempo = base_default
-    local start_tempo = start_default
-    local step = step_default
-    local end_tempo = end_default
     local tempo_multiplier = multiplier_default
-    local render_click = render_click_default
-    local force_region_base = force_region_base_default
-    local region_name_filter = region_name_filter_default
     local per_region_mode = true
     local per_region_selected_only = GFX_DIRECT_SELECTED_ONLY or per_region_selected_only_default
+    local region_name_filter = region_name_filter_default
 
-    if not (base_tempo and start_tempo and step and end_tempo and tempo_multiplier) or step == 0 then
+    if not (base_tempo and tempo_multiplier) then
         reaper.ShowMessageBox(
-            "Saved defaults are invalid. Run the non-gfx script once to set valid defaults.",
+            "Saved defaults are invalid. Run the script once to set valid defaults.",
             "Error",
             0
         )
@@ -1663,30 +1639,25 @@ main = function()
         return
     end
 
-    if (end_tempo - start_tempo) * step < 0 then
-        reaper.ShowMessageBox("Step direction does not move from start to end.", "Error", 0)
-        return
-    end
-
     save_last_params(
         proj,
         base_tempo,
-        start_tempo,
-        step,
-        end_tempo,
         tempo_multiplier,
-        render_click,
-        force_region_base,
-        region_name_filter,
         per_region_mode,
-        per_region_selected_only
+        per_region_selected_only,
+        region_name_filter
     )
 
-    local base_tempo_actual = base_tempo * tempo_multiplier
-    local start_tempo_actual = start_tempo * tempo_multiplier
-    local end_tempo_actual = end_tempo * tempo_multiplier
+    local solo_track = find_solo_track(proj)
+    if not solo_track then
+        reaper.ShowMessageBox(
+            "SOLO track not found (track name containing '" .. SOLO_TRACK_NAME .. "').",
+            "Error",
+            0
+        )
+        return
+    end
 
-    local click_track = find_click_track(proj)
     local per_region_configs = nil
     local region_selection_scope = "all regions"
     local pending_rows = nil
@@ -1736,8 +1707,7 @@ main = function()
             local configs, err = prompt_per_region_settings(
                 proj,
                 regions,
-                tempo_multiplier,
-                render_click
+                tempo_multiplier
             )
             if not configs then
                 if err and err ~= "pending" and err ~= "cancelled" then
@@ -1752,19 +1722,9 @@ main = function()
     reaper.Undo_BeginBlock()
 
     local markers_original = capture_tempo_map(proj)
-    local region_starts = {}
-    if force_region_base then
-        region_starts = collect_region_start_positions(proj, region_name_filter)
-    end
     local original_render_state = capture_render_state(proj)
     local original_region_selection = capture_region_selection(proj)
 
-    local original_click_mute = nil
-    if click_track then
-        original_click_mute = reaper.GetMediaTrackInfo_Value(click_track, "B_MUTE")
-    end
-
-    -- Save original track selection
     local prev_sel = {}
     local track_count = reaper.CountTracks(proj)
     for i = 0, track_count - 1 do
@@ -1774,19 +1734,21 @@ main = function()
         end
     end
 
+    local original_solo_state = capture_all_track_solo_state(proj)
+
+    local _, solo_name = reaper.GetTrackName(solo_track, "")
+
     local function restore_original_state()
         restore_tempo_map(proj, markers_original)
         restore_render_state(proj, original_render_state)
         restore_region_selection(proj, original_region_selection)
 
-        if click_track and original_click_mute ~= nil then
-            reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
-        end
-
         reaper.Main_OnCommand(40297, 0)
         for i = 1, #prev_sel do
             reaper.SetTrackSelected(prev_sel[i], true)
         end
+
+        restore_track_solo_state(original_solo_state)
 
         reaper.UpdateArrange()
     end
@@ -1800,146 +1762,40 @@ main = function()
 
     local ok, err = xpcall(function()
         reaper.ShowConsoleMsg("")
-        log("=== renderTempoSet - queue with CLICK ===")
-        log(string.format("Original base tempo: %g (REAPER: %g)", base_tempo, base_tempo_actual))
+        log("=== soloCue render - queue ===")
+        log(string.format("SOLO track: %s", solo_name or "<unnamed>"))
+        log(string.format("Base tempo: %g (REAPER: %g)", base_tempo, base_tempo * tempo_multiplier))
         log(string.format("Tempo multiplier: %g", tempo_multiplier))
-        log(string.format("Render pattern base (regular): %s", RENDER_PATTERN_BASE))
-        log(string.format("Click pattern base: %s", CLICK_PATTERN_BASE))
-        if click_track then
-            local _, name = reaper.GetTrackName(click_track, "")
-            log("CLICKTRACK found: " .. (name or "<unnamed>"))
-        else
-            log("CLICKTRACK not found (name contains 'CLICKTRACK').")
-        end
-        log(string.format("Range (display): %g to %g step %g", start_tempo, end_tempo, step))
-        log(string.format(
-            "Range (REAPER quarter-note BPM): %g to %g step %g",
-            start_tempo_actual,
-            end_tempo_actual,
-            step * tempo_multiplier
-        ))
-        log("Render Click Files: " .. (render_click and "YES" or "NO"))
+        log(string.format("Render pattern base: %s", SOLO_CUE_PATTERN_BASE))
         log("Per-Region Settings Mode: " .. (per_region_mode and "YES" or "NO"))
         log("Region Selection Scope: " .. region_selection_scope)
-        log("Force Base Tempo At Region Starts: " .. (force_region_base and "YES" or "NO"))
-        if force_region_base then
-            log(string.format("Region filter: %s", region_name_filter ~= "" and region_name_filter or "<all regions>"))
-            log(string.format("Matched region starts: %d", #region_starts))
-            if #region_starts == 0 then
-                log("WARNING: no regions matched filter; no base-tempo markers will be forced.")
-            end
-        end
         log("--------------------------------------")
 
         if per_region_mode then
             reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
 
             local queue_plan = build_queue_summary(per_region_configs, tempo_multiplier)
-            local click_groups = queue_plan.click_groups
-            local regular_groups = queue_plan.regular_groups
-            local queued_click_count = 0
-            local queued_click_region_count = 0
-            local queued_regular_count = 0
-            local queued_regular_region_count = 0
+            local groups = queue_plan.groups
+            local queued_count = 0
+            local queued_region_count = 0
             local skipped_existing_count = 0
             local stopped_early = false
 
             log(queue_plan.summary_text)
             log("Existing-file skip: " .. (queue_options.skip_existing and "YES" or "NO"))
-            if #click_groups > 0 then
-                log("Planned click groups:")
-                for group_index = 1, #click_groups do
-                    log(string.format("  C%d: %s", group_index, describe_group(click_groups[group_index])))
-                end
-            end
-            if #regular_groups > 0 then
-                log("Planned regular groups:")
-                for group_index = 1, #regular_groups do
-                    log(string.format("  G%d: %s", group_index, describe_group(regular_groups[group_index])))
+            if #groups > 0 then
+                log("Planned groups:")
+                for group_index = 1, #groups do
+                    log(string.format("  G%d: %s", group_index, describe_group(groups[group_index])))
                 end
             end
 
-            if #click_groups > 0 then
-                if not click_track then
-                    log("SKIP CLICK: no CLICKTRACK found.")
-                elseif not command_is_configured(CMD_APPLY_GPHIL_CLICK) then
-                    log("SKIP CLICK: GPHIL_CLICK preset action not configured.")
-                else
-                    for group_index = 1, #click_groups do
-                        local group = click_groups[group_index]
-
-                        restore_tempo_map(proj, markers_original)
-                        for region_index = 1, #group.regions do
-                            local cfg = group.regions[region_index]
-                            ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
-                        end
-
-                        reaper.Main_OnCommand(40297, 0)
-                        reaper.SetTrackSelected(click_track, true)
-                        if original_click_mute ~= nil then
-                            reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 0)
-                        end
-
-                        restore_render_state(proj, original_render_state)
-                        if apply_preset(CMD_APPLY_GPHIL_CLICK, "GPHIL_CLICK") then
-                            local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, group.base_suffix)
-                            set_render_pattern(proj, click_pattern)
-                            local active_regions, existing, unchecked = filter_regions_for_existing_outputs(
-                                proj,
-                                click_pattern,
-                                group.regions,
-                                queue_options.skip_existing
-                            )
-                            log_existing_output_result(
-                                string.format("CLICK group %d", group_index),
-                                existing,
-                                unchecked,
-                                queue_options.skip_existing
-                            )
-                            skipped_existing_count = skipped_existing_count + (#group.regions - #active_regions)
-
-                            if #active_regions == 0 then
-                                log(string.format("CLICK group %d SKIP: all likely outputs already exist.", group_index))
-                            else
-                                select_regions(proj, active_regions)
-                                reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
-                                commit_tempo_map_changes(proj)
-                                reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                                reaper.UpdateArrange()
-                                queued_click_count = queued_click_count + 1
-                                queued_click_region_count = queued_click_region_count + #active_regions
-                                log(string.format(
-                                    "CLICK group %d QUEUED: %s (%s), base %g -> %s",
-                                    group_index,
-                                    region_rows_label(active_regions),
-                                    region_count_label(#active_regions),
-                                    group.base_tempo,
-                                    click_pattern
-                                ))
-                            end
-                        else
-                            log(string.format(
-                                "CLICK group %d SKIP: failed to apply GPHIL_CLICK preset.",
-                                group_index
-                            ))
-                        end
-
-                        if original_click_mute ~= nil then
-                            reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
-                        end
-                        reaper.Main_OnCommand(40297, 0)
-                        for tr_i = 1, #prev_sel do
-                            reaper.SetTrackSelected(prev_sel[tr_i], true)
-                        end
-                    end
-                end
-            end
-
-            if not command_is_configured(CMD_APPLY_GPHIL_RENDER) then
-                log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
+            if not command_is_configured(CMD_APPLY_SOLO_CUE) then
+                log("SOLO_CUE preset action not configured. Skipping all renders.")
+                stopped_early = true
             else
-                for group_index = 1, #regular_groups do
-                    local group = regular_groups[group_index]
+                for group_index = 1, #groups do
+                    local group = groups[group_index]
 
                     restore_tempo_map(proj, markers_original)
                     for region_index = 1, #group.regions do
@@ -1947,30 +1803,25 @@ main = function()
                         ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
                     end
 
-                    local markers_for_scale = capture_tempo_map(proj)
-                    scale_tempo_map(proj, markers_for_scale, group.factor)
-
-                    if click_track and original_click_mute ~= nil then
-                        reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
-                    end
+                    true_solo_track(proj, solo_track)
 
                     restore_render_state(proj, original_render_state)
-                    if not apply_preset(CMD_APPLY_GPHIL_RENDER, "GPHIL_RENDER") then
-                        log("Stopping: failed to apply GPHIL_RENDER preset.")
+                    if not apply_preset(CMD_APPLY_SOLO_CUE, "SOLO_CUE") then
+                        log("Stopping: failed to apply SOLO_CUE preset.")
                         stopped_early = true
                         break
                     end
 
-                    local new_pattern = with_tempo_suffix(RENDER_PATTERN_BASE, group.tempo_display)
-                    set_render_pattern(proj, new_pattern)
+                    local solo_pattern = with_tempo_suffix(SOLO_CUE_PATTERN_BASE, group.base_suffix)
+                    set_render_pattern(proj, solo_pattern)
                     local active_regions, existing, unchecked = filter_regions_for_existing_outputs(
                         proj,
-                        new_pattern,
+                        solo_pattern,
                         group.regions,
                         queue_options.skip_existing
                     )
                     log_existing_output_result(
-                        string.format("Render group %d", group_index),
+                        string.format("Group %d", group_index),
                         existing,
                         unchecked,
                         queue_options.skip_existing
@@ -1978,24 +1829,22 @@ main = function()
                     skipped_existing_count = skipped_existing_count + (#group.regions - #active_regions)
 
                     if #active_regions == 0 then
-                        log(string.format("Render group %d SKIP: all likely outputs already exist.", group_index))
+                        log(string.format("Group %d SKIP: all likely outputs already exist.", group_index))
                     else
                         select_regions(proj, active_regions)
                         reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
                         commit_tempo_map_changes(proj)
                         reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
                         reaper.UpdateArrange()
-                        queued_regular_count = queued_regular_count + 1
-                        queued_regular_region_count = queued_regular_region_count + #active_regions
+                        queued_count = queued_count + 1
+                        queued_region_count = queued_region_count + #active_regions
                         log(string.format(
-                            "Render group %d QUEUED: %s (%s), tempo %g (base %g, factor %.6f) -> %s",
+                            "Group %d QUEUED: %s (%s), base %g -> %s",
                             group_index,
                             region_rows_label(active_regions),
                             region_count_label(#active_regions),
-                            group.target_tempo,
                             group.base_tempo,
-                            group.factor,
-                            new_pattern
+                            solo_pattern
                         ))
                     end
                 end
@@ -2003,130 +1852,23 @@ main = function()
 
             log("--------------------------------------")
             log(string.format(
-                "Per-region queue %s. Click entries: %d (%d regions), regular entries: %d (%d regions), skipped existing region outputs: %d.",
+                "Per-region queue %s. Queue entries: %d (%d regions), skipped existing region outputs: %d.",
                 stopped_early and "stopped early" or "complete",
-                queued_click_count,
-                queued_click_region_count,
-                queued_regular_count,
-                queued_regular_region_count,
+                queued_count,
+                queued_region_count,
                 skipped_existing_count
             ))
-        else
-            -- 1) Optional CLICK render at base tempo
-            if render_click then
-                if not click_track then
-                    log("SKIP CLICK: no CLICKTRACK found.")
-                elseif not command_is_configured(CMD_APPLY_GPHIL_CLICK) then
-                    log("SKIP CLICK: GPHIL_CLICK preset action not configured.")
-                else
-                    restore_tempo_map(proj, markers_original)
-                    if force_region_base and #region_starts > 0 then
-                        enforce_region_start_base_tempo(proj, region_starts, base_tempo_actual)
-                    end
-
-                    -- Select only CLICKTRACK
-                    reaper.Main_OnCommand(40297, 0)
-                    reaper.SetTrackSelected(click_track, true)
-
-                    -- Unmute click
-                    if original_click_mute ~= nil then
-                        reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 0)
-                    end
-
-                    restore_render_state(proj, original_render_state)
-                    if apply_preset(CMD_APPLY_GPHIL_CLICK, "GPHIL_CLICK") then
-                        local base_suffix = math.floor(base_tempo + 0.5)
-                        local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, tostring(base_suffix))
-                        set_render_pattern(proj, click_pattern)
-
-                        commit_tempo_map_changes(proj)
-                        reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                        reaper.UpdateArrange()
-                        log(string.format(
-                            "CLICK QUEUED: tempo = %g (REAPER: %g) -> pattern: %s",
-                            base_tempo,
-                            base_tempo_actual,
-                            click_pattern
-                        ))
-                    else
-                        log("SKIP CLICK: failed to apply GPHIL_CLICK preset.")
-                    end
-
-                    if original_click_mute ~= nil then
-                        reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
-                    end
-
-                    reaper.Main_OnCommand(40297, 0)
-                    for i = 1, #prev_sel do
-                        reaper.SetTrackSelected(prev_sel[i], true)
-                    end
-
-                    restore_tempo_map(proj, markers_original)
-                end
-            end
-
-            -- 2) Regular renders with GPHIL_RENDER
-            if not command_is_configured(CMD_APPLY_GPHIL_RENDER) then
-                log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
-            else
-                local tempo = start_tempo
-                local iteration = 1
-
-                while (step > 0 and tempo <= end_tempo) or (step < 0 and tempo >= end_tempo) do
-                    local target_tempo = tempo
-                    local target_tempo_actual = target_tempo * tempo_multiplier
-                    local factor = target_tempo_actual / base_tempo_actual
-
-                    restore_tempo_map(proj, markers_original)
-                    if force_region_base and #region_starts > 0 then
-                        enforce_region_start_base_tempo(proj, region_starts, base_tempo_actual)
-                    end
-
-                    local markers_for_scale = capture_tempo_map(proj)
-                    scale_tempo_map(proj, markers_for_scale, factor)
-
-                    if click_track and original_click_mute ~= nil then
-                        reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
-                    end
-
-                    restore_render_state(proj, original_render_state)
-                    if not apply_preset(CMD_APPLY_GPHIL_RENDER, "GPHIL_RENDER") then
-                        log("Stopping: failed to apply GPHIL_RENDER preset.")
-                        break
-                    end
-
-                    local tempo_display = math.floor(target_tempo + 0.5)
-                    local new_pattern = with_tempo_suffix(RENDER_PATTERN_BASE, tostring(tempo_display))
-                    set_render_pattern(proj, new_pattern)
-
-                    commit_tempo_map_changes(proj)
-                    reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                    reaper.UpdateArrange()
-
-                    log(string.format(
-                        "#%d QUEUED: target tempo = %g (REAPER: %g, factor %.6f) -> pattern: %s",
-                        iteration,
-                        target_tempo,
-                        target_tempo_actual,
-                        factor,
-                        new_pattern
-                    ))
-
-                    iteration = iteration + 1
-                    tempo = tempo + step
-                end
-            end
         end
     end, format_traceback)
 
     restore_original_state()
-    reaper.Undo_EndBlock("renderTempoSet - queue with CLICK", -1)
+    reaper.Undo_EndBlock("soloCue render - queue", -1)
 
     if not ok then
         log("--------------------------------------")
         log("ERROR: " .. tostring(err))
         reaper.ShowMessageBox(
-            "renderTempoSet stopped after an error. Original project state was restored.\n\n" .. tostring(err),
+            "soloCue render stopped after an error. Original project state was restored.\n\n" .. tostring(err),
             "Error",
             0
         )
@@ -2135,7 +1877,8 @@ main = function()
 
     log("--------------------------------------")
     log("Done. Queue entries added.")
-    log("Original tempo map, render settings, CLICKTRACK mute, selection, and region selection restored.")
+    log("Original tempo map, render settings, region selection, track selection, and solo state restored.")
 end
+
 
 main()
