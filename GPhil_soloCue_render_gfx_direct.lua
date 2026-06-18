@@ -21,7 +21,6 @@ local SOLO_CUE_PATTERN_BASE               = "AUDIO/SOLO_CUE/$region/$project_$re
 
 local EXT_SECTION                         = "renderSoloCue"
 local GFX_DIRECT_SELECTED_ONLY            = true
-local PER_REGION_DEFAULT_STEP             = 5
 local GROUP_KEY_SCALE                     = 1000000
 local PENDING_REGION_ROWS_KEY             = "pending_region_rows_v1"
 local PENDING_QUEUE_OPTIONS_KEY           = "pending_queue_options_v1"
