@@ -66,21 +66,40 @@ local function log(msg)
     reaper.ShowConsoleMsg(tostring(msg) .. "\n")
 end
 
-local function get_track_by_name_contains(proj, name_fragment)
-    local lc = name_fragment:lower()
-    local track_count = reaper.CountTracks(proj)
-    for i = 0, track_count - 1 do
-        local track = reaper.GetTrack(proj, i)
-        local _, name = reaper.GetTrackName(track, "")
-        if name and name:lower():find(lc, 1, true) then
-            return track
-        end
+local function track_name_contains(track, name_fragment)
+    if not track or not name_fragment or name_fragment == "" then
+        return false
     end
-    return nil
+
+    local _, name = reaper.GetTrackName(track, "")
+    return name and name:lower():find(name_fragment:lower(), 1, true) ~= nil
 end
 
 local function find_solo_track(proj)
-    return get_track_by_name_contains(proj, SOLO_TRACK_NAME)
+    local first_match = nil
+    local selected_match = nil
+    local selected_match_count = 0
+    local track_count = reaper.CountTracks(proj)
+
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        if track_name_contains(track, SOLO_TRACK_NAME) then
+            first_match = first_match or track
+            if reaper.IsTrackSelected(track) then
+                selected_match = selected_match or track
+                selected_match_count = selected_match_count + 1
+            end
+        end
+    end
+
+    return selected_match or first_match, selected_match_count
+end
+
+local function select_only_track(track)
+    reaper.Main_OnCommand(40297, 0) -- Track: Unselect all tracks
+    if track then
+        reaper.SetTrackSelected(track, true)
+    end
 end
 
 local function parse_bool(str, default_if_empty)
@@ -1471,10 +1490,20 @@ main = function()
         region_name_filter
     )
 
-    local solo_track = find_solo_track(proj)
+    local solo_track, selected_solo_count = find_solo_track(proj)
     if not solo_track then
         reaper.ShowMessageBox(
             "SOLO track not found (track name containing '" .. SOLO_TRACK_NAME .. "').",
+            "Error",
+            0
+        )
+        return
+    end
+    if selected_solo_count > 1 then
+        reaper.ShowMessageBox(
+            "More than one selected track contains '" ..
+            SOLO_TRACK_NAME ..
+            "'. Select exactly one SOLO track, or leave SOLO tracks unselected to use the first match.",
             "Error",
             0
         )
@@ -1558,11 +1587,15 @@ main = function()
     end
 
     local _, solo_name = reaper.GetTrackName(solo_track, "")
+    local original_solo_mute = reaper.GetMediaTrackInfo_Value(solo_track, "B_MUTE")
 
     local function restore_original_state()
         restore_tempo_map(proj, markers_original)
         restore_render_state(proj, original_render_state)
         restore_region_selection(proj, original_region_selection)
+        if original_solo_mute ~= nil then
+            reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", original_solo_mute)
+        end
 
         reaper.Main_OnCommand(40297, 0)
         for i = 1, #prev_sel do
@@ -1623,13 +1656,16 @@ main = function()
                     end
 
                     -- Isolate the SOLO track via track SELECTION (not B_SOLO):
-                    -- the SOLO_CUE preset renders only selected tracks within the region bound,
+                    -- the SOLO_CUE preset must render selected tracks within the region bound,
                     -- matching how the source script isolates the click track.
-                    reaper.Main_OnCommand(40297, 0) -- unselect all tracks
-                    reaper.SetTrackSelected(solo_track, true)
+                    select_only_track(solo_track)
+                    if original_solo_mute ~= nil then
+                        reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", 0)
+                    end
 
                     restore_render_state(proj, original_render_state)
                     if not apply_preset(CMD_APPLY_SOLO_CUE, "SOLO_CUE") then
+                        select_only_track(solo_track)
                         log("Stopping: failed to apply SOLO_CUE preset.")
                         stopped_early = true
                         break
@@ -1657,6 +1693,10 @@ main = function()
                         select_regions(proj, active_regions)
                         reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
                         commit_tempo_map_changes(proj)
+                        select_only_track(solo_track)
+                        if original_solo_mute ~= nil then
+                            reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", 0)
+                        end
                         reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
                         reaper.UpdateArrange()
                         queued_count = queued_count + 1
@@ -1672,6 +1712,9 @@ main = function()
                     end
 
                     -- Restore track selection between groups so the next group starts clean.
+                    if original_solo_mute ~= nil then
+                        reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", original_solo_mute)
+                    end
                     reaper.Main_OnCommand(40297, 0)
                     for tr_i = 1, #prev_sel do
                         reaper.SetTrackSelected(prev_sel[tr_i], true)
