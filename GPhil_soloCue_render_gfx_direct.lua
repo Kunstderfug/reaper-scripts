@@ -27,8 +27,6 @@ local PENDING_QUEUE_OPTIONS_KEY           = "pending_queue_options_v1"
 local SAVED_REGION_ROWS_KEY               = "saved_region_rows_v1"
 local main
 
-local TEMPO_MARKER_FLAG_METRONOME_PATTERN = 8
-local TEMPO_MARKER_FLAGS                  = { 1, 2, 4, 8, 16 }
 
 local RENDER_NUMERIC_KEYS                 = {
     "RENDER_SETTINGS",
@@ -92,23 +90,6 @@ local function parse_bool(str, default_if_empty)
     local s = str:lower()
     return (s == "y" or s == "yes" or s == "1" or s == "true")
 end
-
-local function parse_list(input)
-    local list = {}
-    if not input or input == "" then
-        return list
-    end
-
-    for token in input:gmatch("([^;|]+)") do
-        local trimmed = token:match("^%s*(.-)%s*$")
-        if trimmed and trimmed ~= "" then
-            list[#list + 1] = trimmed:lower()
-        end
-    end
-
-    return list
-end
-
 local function trim_string(value)
     if not value then
         return ""
@@ -278,63 +259,6 @@ local function save_last_params(
     )
     reaper.SetProjExtState(proj, EXT_SECTION, "region_name_filter", region_name_filter or "")
 end
-
-local function flag_is_set(flags, flag)
-    if not flags then
-        return false
-    end
-    return math.floor(flags / flag) % 2 == 1
-end
-
-local function get_tempo_marker_flags(proj, marker_index)
-    if not reaper.GetSetTempoTimeSigMarkerFlag then
-        return nil
-    end
-    return reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, 0, false)
-end
-
-local function set_tempo_marker_flags(proj, marker_index, flags)
-    if not flags or not reaper.GetSetTempoTimeSigMarkerFlag then
-        return
-    end
-
-    for i = 1, #TEMPO_MARKER_FLAGS do
-        local flag = TEMPO_MARKER_FLAGS[i]
-        reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, flag, flag_is_set(flags, flag))
-    end
-end
-
-local function get_metronome_pattern(proj, timepos)
-    if not reaper.TimeMap_GetMetronomePattern then
-        return nil
-    end
-
-    local _, pattern = reaper.TimeMap_GetMetronomePattern(proj, timepos, "EXTENDED")
-    if pattern and pattern ~= "" then
-        return pattern
-    end
-    return nil
-end
-
-local function set_metronome_pattern(proj, timepos, pattern)
-    if not pattern or pattern == "" or not reaper.TimeMap_GetMetronomePattern then
-        return
-    end
-    reaper.TimeMap_GetMetronomePattern(proj, timepos, "SET:" .. pattern)
-end
-
-local function find_tempo_marker_at_time(proj, timepos)
-    local eps = 0.0000005
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = 0, cnt - 1 do
-        local retval, marker_timepos = reaper.GetTempoTimeSigMarker(proj, i)
-        if retval and math.abs(marker_timepos - timepos) <= eps then
-            return i
-        end
-    end
-    return nil
-end
-
 local function commit_tempo_map_changes(proj)
     if reaper.UpdateTimeline then
         reaper.UpdateTimeline()
@@ -489,73 +413,6 @@ local function apply_preset(cmd_id, label)
     reaper.Main_OnCommand(command, 0)
     return true
 end
-
-local function collect_regions(proj)
-    local regions = {}
-    local idx = 0
-    while true do
-        local retval, is_region, pos, rgnend, name, marker_index = reaper.EnumProjectMarkers3(proj, idx)
-        if retval == 0 then
-            break
-        end
-
-        if is_region then
-            regions[#regions + 1] = {
-                pos = pos,
-                rgnend = rgnend,
-                name = name or "",
-                marker_index = marker_index
-            }
-        end
-
-        idx = idx + 1
-    end
-    return regions
-end
-
-local function region_matches_filter(region_name, filter_tokens)
-    if #filter_tokens == 0 then
-        return true
-    end
-
-    local name = (region_name or ""):lower()
-    for i = 1, #filter_tokens do
-        local token = filter_tokens[i]
-        if name == token or name:find(token, 1, true) then
-            return true
-        end
-    end
-
-    return false
-end
-
-local function collect_region_start_positions(proj, region_name_filter)
-    local regions = collect_regions(proj)
-    local filter_tokens = parse_list(region_name_filter)
-    local starts = {}
-    local used = {}
-
-    for i = 1, #regions do
-        local region = regions[i]
-        if region_matches_filter(region.name, filter_tokens) then
-            local key = string.format("%.9f", region.pos)
-            if not used[key] then
-                used[key] = true
-                starts[#starts + 1] = {
-                    pos = region.pos,
-                    name = region.name
-                }
-            end
-        end
-    end
-
-    table.sort(starts, function(a, b)
-        return a.pos < b.pos
-    end)
-
-    return starts
-end
-
 local function ensure_tempo_marker_at_time(proj, timepos, bpm)
     local eps = 0.0000005
     local cnt = reaper.CountTempoTimeSigMarkers(proj)
