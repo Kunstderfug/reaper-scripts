@@ -913,23 +913,16 @@ build_per_region_queue_groups = function(configs, tempo_multiplier)
     return groups
 end
 
-local function default_per_region_tempo_range(base_tempo)
-    local step = PER_REGION_DEFAULT_STEP
-    return base_tempo - step * 4, step, base_tempo + step * 4
-end
-
 local function prompt_per_region_settings(
     proj,
     regions,
-    tempo_multiplier,
-    default_click
+    tempo_multiplier
 )
     local rows = {}
     for i = 1, #regions do
         local region = regions[i]
         local base_actual = reaper.TimeMap2_GetDividedBpmAtTime(proj, region.pos)
         local base_tempo = base_actual / tempo_multiplier
-        local start_tempo, step, end_tempo = default_per_region_tempo_range(base_tempo)
         rows[i] = {
             internal_index = region.internal_index,
             marker = region.marker,
@@ -938,16 +931,12 @@ local function prompt_per_region_settings(
             name = region.name,
             number = region.number,
             base_tempo = base_tempo,
-            start_tempo = start_tempo,
-            step = step,
-            end_tempo = end_tempo,
-            render_click = default_click,
             enabled = true
         }
     end
 
-    local title = string.format("Region Tempo Grid (%d regions)", #rows)
-    local win_w = 1240
+    local title = string.format("Region Solo-Cue Grid (%d regions)", #rows)
+    local win_w = 760
     local win_h = 760
     gfx.init(title, win_w, win_h)
     gfx.setfont(1, "Arial", 16)
@@ -980,30 +969,13 @@ local function prompt_per_region_settings(
         if row.base_tempo <= 0 then
             return false, "Base tempo must be > 0"
         end
-        if row.step == 0 then
-            return false, "Step must be non-zero"
-        end
-        if (row.end_tempo - row.start_tempo) * row.step < 0 then
-            return false, "Step direction must reach Max"
-        end
         return true, nil
     end
 
     local function snapshot_entry(row)
         return {
-            base_tempo = row.base_tempo,
-            start_tempo = row.start_tempo,
-            end_tempo = row.end_tempo,
-            step = row.step,
-            render_click = row.render_click
+            base_tempo = row.base_tempo
         }
-    end
-
-    local function apply_entry_except_base(row, entry)
-        row.start_tempo = entry.start_tempo
-        row.end_tempo = entry.end_tempo
-        row.step = entry.step
-        row.render_click = entry.render_click
     end
 
     local function row_storage_key(row)
@@ -1052,15 +1024,6 @@ local function prompt_per_region_settings(
             if numeric_group_key(a.base_tempo) ~= numeric_group_key(b.base_tempo) then
                 return (a.base_tempo or 0) < (b.base_tempo or 0)
             end
-            if numeric_group_key(a.start_tempo) ~= numeric_group_key(b.start_tempo) then
-                return (a.start_tempo or 0) < (b.start_tempo or 0)
-            end
-            if numeric_group_key(a.end_tempo) ~= numeric_group_key(b.end_tempo) then
-                return (a.end_tempo or 0) < (b.end_tempo or 0)
-            end
-            if numeric_group_key(a.step) ~= numeric_group_key(b.step) then
-                return (a.step or 0) < (b.step or 0)
-            end
             if (a.pos or 0) ~= (b.pos or 0) then
                 return (a.pos or 0) < (b.pos or 0)
             end
@@ -1069,7 +1032,7 @@ local function prompt_per_region_settings(
 
         selected_row = math.min(selected_row, #rows)
         scroll_row = math.min(scroll_row, math.max(1, #rows))
-        set_message("Sorted rows by On, Base, Min, Max, Step.")
+        set_message("Sorted rows by On, Base.")
     end
 
     local function confirm_queue_options()
@@ -1113,7 +1076,7 @@ local function prompt_per_region_settings(
         end
 
         reaper.ShowConsoleMsg("")
-        local plan = log_queue_plan(rows, tempo_multiplier, "=== DRY RUN: optimized GFX queue plan ===")
+        local plan = log_queue_plan(rows, tempo_multiplier, "=== DRY RUN: solo-cue queue plan ===")
         reaper.ShowMessageBox(plan.summary_text, "Dry Run Queue Plan", 0)
         set_message("Dry run written to console; no queue entries added.")
     end
@@ -1123,20 +1086,8 @@ local function prompt_per_region_settings(
             set_message("Nothing to copy yet. Edit one row first.")
             return
         end
-        apply_entry_except_base(rows[row_idx], last_entry)
-        set_message(string.format("Copied last values to row %d; base unchanged", row_idx))
-    end
-
-    local function copy_last_to_all_rows()
-        if not last_entry then
-            set_message("Nothing to copy yet. Edit one row first.")
-            return
-        end
-
-        for i = 1, #rows do
-            apply_entry_except_base(rows[i], last_entry)
-        end
-        set_message(string.format("Copied last values to all %d rows; bases unchanged", #rows))
+        rows[row_idx].base_tempo = last_entry.base_tempo
+        set_message(string.format("Copied last Base to row %d", row_idx))
     end
 
     local function save_piece_settings()
@@ -1172,14 +1123,14 @@ local function prompt_per_region_settings(
         for i = 1, #rows do
             local saved = by_key[row_storage_key(rows[i])]
             if saved then
-                apply_entry_except_base(rows[i], saved)
+                rows[i].base_tempo = saved.base_tempo
                 loaded = loaded + 1
             end
         end
 
         if loaded > 0 then
             last_entry = snapshot_entry(rows[selected_row])
-            set_message(string.format("Loaded settings for %d rows; bases unchanged", loaded))
+            set_message(string.format("Loaded Base for %d rows", loaded))
         else
             set_message("No saved rows matched current regions.")
         end
@@ -1202,31 +1153,13 @@ local function prompt_per_region_settings(
         return inside
     end
 
-    local function edit_number_cell(row_idx, col_idx)
+    local function edit_base_cell(row_idx)
         local row = rows[row_idx]
-        local label
-        local current
-        if col_idx == 4 then
-            label = "Base tempo"
-            current = row.base_tempo
-        elseif col_idx == 5 then
-            label = "Min tempo"
-            current = row.start_tempo
-        elseif col_idx == 6 then
-            label = "Max tempo"
-            current = row.end_tempo
-        elseif col_idx == 7 then
-            label = "Step"
-            current = row.step
-        else
-            return
-        end
-
         local ok, out = reaper.GetUserInputs(
-            string.format("Edit %s (Row %d)", label, row_idx),
+            string.format("Edit Base tempo (Row %d)", row_idx),
             1,
-            label,
-            tostring(current)
+            "Base tempo",
+            tostring(row.base_tempo)
         )
         if not ok then
             return
@@ -1238,16 +1171,7 @@ local function prompt_per_region_settings(
             return
         end
 
-        if col_idx == 4 then
-            row.base_tempo = val
-        elseif col_idx == 5 then
-            row.start_tempo = val
-        elseif col_idx == 6 then
-            row.end_tempo = val
-        elseif col_idx == 7 then
-            row.step = val
-        end
-
+        row.base_tempo = val
         local valid, err = validate_row(row)
         if not valid then
             set_message(err)
@@ -1255,12 +1179,6 @@ local function prompt_per_region_settings(
         end
         last_entry = snapshot_entry(row)
         set_message(string.format("Updated row %d", row_idx))
-    end
-
-    local function toggle_click_cell(row_idx)
-        local row = rows[row_idx]
-        row.render_click = not row.render_click
-        last_entry = snapshot_entry(row)
     end
 
     local function toggle_enabled_cell(row_idx)
@@ -1287,19 +1205,17 @@ local function prompt_per_region_settings(
 
         local row2_y = top_y + 42
         local copy_hover = draw_button(bx, row2_y, 220, btn_h, "Copy Last To Selected")
-        local fill_hover = draw_button(bx + 232, row2_y, 220, btn_h, "Fill Down From Selected")
-        local copy_all_hover = draw_button(bx + 464, row2_y, 140, btn_h, "Copy To All")
 
         gfx.set(1, 1, 1, 1)
         gfx.x = 16
         gfx.y = top_y + 82
-        gfx.drawstr("Double-click numeric cell to edit. Click On/Click cells to toggle. Mouse wheel scrolls rows.")
+        gfx.drawstr("Double-click Base to edit. Click On to toggle. Mouse wheel scrolls rows.")
 
         local table_x = 16
         local table_y = top_y + 116
         local row_h = 28
-        local col_w = { 54, 58, 330, 90, 90, 90, 80, 70 }
-        local col_name = { "On", "Grp", "Region", "Base", "Min", "Max", "Step", "Click" }
+        local col_w = { 54, 58, 330, 120 }
+        local col_name = { "On", "Grp", "Region", "Base" }
         local row_group_ids = assign_regular_row_group_ids(rows)
 
         local data_top = table_y + row_h
@@ -1332,11 +1248,7 @@ local function prompt_per_region_settings(
                 row_is_enabled(row) and "Y" or "N",
                 row_is_enabled(row) and ("G" .. tostring(row_group_ids[row_idx] or "-")) or "-",
                 region_cell,
-                string.format("%g", row.base_tempo),
-                string.format("%g", row.start_tempo),
-                string.format("%g", row.end_tempo),
-                string.format("%g", row.step),
-                row.render_click and "Y" or "N"
+                string.format("%g", row.base_tempo)
             }
 
             for c = 1, #col_w do
@@ -1423,27 +1335,6 @@ local function prompt_per_region_settings(
                 return nil
             elseif copy_hover then
                 copy_last_to_row(selected_row)
-            elseif fill_hover then
-                local valid, err = validate_row(rows[selected_row])
-                if not valid then
-                    set_message(string.format("Selected row invalid: %s", err))
-                elseif selected_row >= #rows then
-                    set_message("No rows below selected row.")
-                else
-                    local selected_entry = snapshot_entry(rows[selected_row])
-                    for i = selected_row + 1, #rows do
-                        apply_entry_except_base(rows[i], selected_entry)
-                    end
-                    last_entry = selected_entry
-                    set_message(string.format(
-                        "Filled rows %d-%d from row %d; bases unchanged",
-                        selected_row + 1,
-                        #rows,
-                        selected_row
-                    ))
-                end
-            elseif copy_all_hover then
-                copy_last_to_all_rows()
             elseif save_hover then
                 save_piece_settings()
             elseif load_hover then
@@ -1475,15 +1366,8 @@ local function prompt_per_region_settings(
 
                         if col == 1 then
                             toggle_enabled_cell(row_idx)
-                        elseif col == 8 then
-                            toggle_click_cell(row_idx)
-                            set_message(string.format(
-                                "Row %d click %s",
-                                row_idx,
-                                rows[row_idx].render_click and "enabled" or "disabled"
-                            ))
-                        elseif col >= 4 and col <= 7 and is_double_click then
-                            edit_number_cell(row_idx, col)
+                        elseif col == 4 and is_double_click then
+                            edit_base_cell(row_idx)
                         end
 
                         last_click_time = now
@@ -1498,244 +1382,11 @@ local function prompt_per_region_settings(
         reaper.defer(ui_loop)
     end
 
-    -- Start modelessly; Queue will stash rows and defer a fresh main() pass.
     reaper.defer(function()
         ui_loop()
     end)
 
     return nil, "pending"
-end
-
-local function capture_render_state(proj)
-    local state = {
-        numeric = {},
-        strings = {}
-    }
-
-    for i = 1, #RENDER_NUMERIC_KEYS do
-        local key = RENDER_NUMERIC_KEYS[i]
-        state.numeric[key] = reaper.GetSetProjectInfo(proj, key, 0, false)
-    end
-
-    for i = 1, #RENDER_STRING_KEYS do
-        local key = RENDER_STRING_KEYS[i]
-        local ok, value = reaper.GetSetProjectInfo_String(proj, key, "", false)
-        if ok then
-            state.strings[key] = value or ""
-        end
-    end
-
-    return state
-end
-
-local function restore_render_state(proj, state)
-    if not state then
-        return
-    end
-
-    for i = 1, #RENDER_NUMERIC_KEYS do
-        local key = RENDER_NUMERIC_KEYS[i]
-        if state.numeric[key] ~= nil then
-            reaper.GetSetProjectInfo(proj, key, state.numeric[key], true)
-        end
-    end
-
-    for i = 1, #RENDER_STRING_KEYS do
-        local key = RENDER_STRING_KEYS[i]
-        if state.strings[key] ~= nil then
-            reaper.GetSetProjectInfo_String(proj, key, state.strings[key], true)
-        end
-    end
-end
-
-local COMMON_RENDER_EXTENSIONS = {
-    ".wav",
-    ".mp3",
-    ".flac",
-    ".ogg",
-    ".aif",
-    ".aiff",
-    ".m4a"
-}
-
-local function path_is_absolute(path)
-    return path and (path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil)
-end
-
-local function join_path(left, right)
-    if not left or left == "" then
-        return right or ""
-    end
-    if not right or right == "" then
-        return left
-    end
-    if path_is_absolute(right) then
-        return right
-    end
-    return left:gsub("[/\\]+$", "") .. "/" .. right:gsub("^[/\\]+", "")
-end
-
-local function file_exists(path)
-    local file = io.open(path, "rb")
-    if file then
-        file:close()
-        return true
-    end
-    return false
-end
-
-local function get_project_directory(proj)
-    if reaper.GetProjectPathEx then
-        local ok, value = pcall(reaper.GetProjectPathEx, proj, "")
-        if ok and value and value ~= "" then
-            return value
-        end
-    end
-
-    if reaper.GetProjectPath then
-        local ok, value = pcall(reaper.GetProjectPath, "")
-        if ok and value and value ~= "" then
-            return value
-        end
-    end
-
-    return ""
-end
-
-local function get_project_stem(proj)
-    local name = ""
-    if reaper.GetProjectName then
-        local ok, value = pcall(reaper.GetProjectName, proj, "")
-        if ok and value then
-            name = value
-        end
-    end
-
-    name = name:match("([^/\\]+)$") or name
-    name = name:gsub("%.[Rr][Pp][Pp]%-?[Bb]?[Aa]?[Kk]?$", "")
-    name = name:gsub("%.[^%.]+$", "")
-    if name == "" then
-        name = "untitled"
-    end
-    return name
-end
-
-local function get_render_directory(proj)
-    local ok, render_dir = reaper.GetSetProjectInfo_String(proj, "RENDER_FILE", "", false)
-    if not ok or not render_dir or render_dir == "" then
-        return get_project_directory(proj)
-    end
-
-    if path_is_absolute(render_dir) then
-        return render_dir
-    end
-
-    return join_path(get_project_directory(proj), render_dir)
-end
-
-local function expand_render_pattern_for_region(proj, pattern, region)
-    local result = pattern or ""
-    local region_name = region.name ~= "" and region.name or tostring(region.number or "")
-    result = result:gsub("%$regionnumber", function()
-        return tostring(region.number or "")
-    end)
-    result = result:gsub("%$region", function()
-        return region_name
-    end)
-    result = result:gsub("%$project", function()
-        return get_project_stem(proj)
-    end)
-    if result:find("$", 1, true) then
-        return nil
-    end
-    return result
-end
-
-local function has_probable_extension(path)
-    local leaf = path:match("([^/\\]+)$") or path
-    return leaf:match("%.[A-Za-z0-9]+$") ~= nil
-end
-
-local function find_existing_render_path(proj, pattern, region)
-    local expanded = expand_render_pattern_for_region(proj, pattern, region)
-    if not expanded or expanded == "" then
-        return nil, false
-    end
-
-    local stem = join_path(get_render_directory(proj), expanded)
-    if has_probable_extension(stem) then
-        return file_exists(stem) and stem or nil, true
-    end
-
-    for i = 1, #COMMON_RENDER_EXTENSIONS do
-        local candidate = stem .. COMMON_RENDER_EXTENSIONS[i]
-        if file_exists(candidate) then
-            return candidate, true
-        end
-    end
-
-    return nil, true
-end
-
-local function filter_regions_for_existing_outputs(proj, pattern, regions, skip_existing)
-    local missing_regions = {}
-    local existing = {}
-    local unchecked = 0
-
-    for i = 1, #regions do
-        local region = regions[i]
-        local existing_path, checked = find_existing_render_path(proj, pattern, region)
-        if existing_path then
-            existing[#existing + 1] = {
-                region = region,
-                path = existing_path
-            }
-            if not skip_existing then
-                missing_regions[#missing_regions + 1] = region
-            end
-        else
-            if not checked then
-                unchecked = unchecked + 1
-            end
-            missing_regions[#missing_regions + 1] = region
-        end
-    end
-
-    return missing_regions, existing, unchecked
-end
-
-local function region_rows_label(regions)
-    local labels = {}
-    for i = 1, #regions do
-        labels[#labels + 1] = "R" .. tostring(regions[i].queue_row_index or "?")
-    end
-    return table.concat(labels, ", ")
-end
-
-local function log_existing_output_result(label, existing, unchecked, skip_existing)
-    if #existing > 0 then
-        log(string.format(
-            "%s: %d likely existing output(s)%s.",
-            label,
-            #existing,
-            skip_existing and " skipped" or " found; queueing anyway"
-        ))
-        local limit = math.min(#existing, 8)
-        for i = 1, limit do
-            log(string.format("  existing: %s", existing[i].path))
-        end
-        if #existing > limit then
-            log(string.format("  ...and %d more.", #existing - limit))
-        end
-    end
-
-    if unchecked > 0 then
-        log(string.format(
-            "%s: %d output path(s) could not be checked because the render pattern has unresolved wildcards.",
-            label,
-            unchecked
-        ))
-    end
 end
 
 main = function()
