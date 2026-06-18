@@ -245,51 +245,30 @@ local function load_last_params(proj)
     end
 
     local base                     = get_num("base_tempo", 60)
-    local start                    = get_num("start_tempo", base)
-    local step                     = get_num("step", 5)
-    local endtp                    = get_num("end_tempo", start + step * 8)
     local multiplier               = get_num("tempo_multiplier", 1)
-    local render_click             = get_bool("render_click", true)
-    local force_region_base        = get_bool("force_region_base", true)
-    local per_region_mode          = get_bool("per_region_mode", true)
+    local per_region_mode          = true
     local per_region_selected_only = get_bool("per_region_selected_only", false)
     local retval, region_csv       = reaper.GetProjExtState(proj, EXT_SECTION, "region_name_filter")
     local region_name_filter       = retval == 1 and region_csv or ""
 
     return
         base,
-        start,
-        step,
-        endtp,
         multiplier,
-        render_click,
-        force_region_base,
-        region_name_filter,
         per_region_mode,
-        per_region_selected_only
+        per_region_selected_only,
+        region_name_filter
 end
 
 local function save_last_params(
     proj,
     base,
-    start_tempo,
-    step,
-    end_tempo,
     multiplier,
-    render_click,
-    force_region_base,
-    region_name_filter,
     per_region_mode,
-    per_region_selected_only
+    per_region_selected_only,
+    region_name_filter
 )
     reaper.SetProjExtState(proj, EXT_SECTION, "base_tempo", tostring(base))
-    reaper.SetProjExtState(proj, EXT_SECTION, "start_tempo", tostring(start_tempo))
-    reaper.SetProjExtState(proj, EXT_SECTION, "step", tostring(step))
-    reaper.SetProjExtState(proj, EXT_SECTION, "end_tempo", tostring(end_tempo))
     reaper.SetProjExtState(proj, EXT_SECTION, "tempo_multiplier", tostring(multiplier))
-    reaper.SetProjExtState(proj, EXT_SECTION, "render_click", render_click and "Y" or "N")
-    reaper.SetProjExtState(proj, EXT_SECTION, "force_region_base", force_region_base and "Y" or "N")
-    reaper.SetProjExtState(proj, EXT_SECTION, "region_name_filter", region_name_filter or "")
     reaper.SetProjExtState(proj, EXT_SECTION, "per_region_mode", per_region_mode and "Y" or "N")
     reaper.SetProjExtState(
         proj,
@@ -297,6 +276,7 @@ local function save_last_params(
         "per_region_selected_only",
         per_region_selected_only and "Y" or "N"
     )
+    reaper.SetProjExtState(proj, EXT_SECTION, "region_name_filter", region_name_filter or "")
 end
 
 local function flag_is_set(flags, flag)
