@@ -1389,6 +1389,238 @@ local function prompt_per_region_settings(
     return nil, "pending"
 end
 
+local function capture_render_state(proj)
+    local state = {
+        numeric = {},
+        strings = {}
+    }
+
+    for i = 1, #RENDER_NUMERIC_KEYS do
+        local key = RENDER_NUMERIC_KEYS[i]
+        state.numeric[key] = reaper.GetSetProjectInfo(proj, key, 0, false)
+    end
+
+    for i = 1, #RENDER_STRING_KEYS do
+        local key = RENDER_STRING_KEYS[i]
+        local ok, value = reaper.GetSetProjectInfo_String(proj, key, "", false)
+        if ok then
+            state.strings[key] = value or ""
+        end
+    end
+
+    return state
+end
+
+local function restore_render_state(proj, state)
+    if not state then
+        return
+    end
+
+    for i = 1, #RENDER_NUMERIC_KEYS do
+        local key = RENDER_NUMERIC_KEYS[i]
+        if state.numeric[key] ~= nil then
+            reaper.GetSetProjectInfo(proj, key, state.numeric[key], true)
+        end
+    end
+
+    for i = 1, #RENDER_STRING_KEYS do
+        local key = RENDER_STRING_KEYS[i]
+        if state.strings[key] ~= nil then
+            reaper.GetSetProjectInfo_String(proj, key, state.strings[key], true)
+        end
+    end
+end
+
+local COMMON_RENDER_EXTENSIONS = {
+    ".wav",
+    ".mp3",
+    ".flac",
+    ".ogg",
+    ".aif",
+    ".aiff",
+    ".m4a"
+}
+
+local function path_is_absolute(path)
+    return path and (path:sub(1, 1) == "/" or path:match("^%a:[/\\]") ~= nil)
+end
+
+local function join_path(left, right)
+    if not left or left == "" then
+        return right or ""
+    end
+    if not right or right == "" then
+        return left
+    end
+    if path_is_absolute(right) then
+        return right
+    end
+    return left:gsub("[/\\]+$", "") .. "/" .. right:gsub("^[/\\]+", "")
+end
+
+local function file_exists(path)
+    local file = io.open(path, "rb")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
+local function get_project_directory(proj)
+    if reaper.GetProjectPathEx then
+        local ok, value = pcall(reaper.GetProjectPathEx, proj, "")
+        if ok and value and value ~= "" then
+            return value
+        end
+    end
+
+    if reaper.GetProjectPath then
+        local ok, value = pcall(reaper.GetProjectPath, "")
+        if ok and value and value ~= "" then
+            return value
+        end
+    end
+
+    return ""
+end
+
+local function get_project_stem(proj)
+    local name = ""
+    if reaper.GetProjectName then
+        local ok, value = pcall(reaper.GetProjectName, proj, "")
+        if ok and value then
+            name = value
+        end
+    end
+
+    name = name:match("([^/\\]+)$") or name
+    name = name:gsub("%.[Rr][Pp][Pp]%-?[Bb]?[Aa]?[Kk]?$", "")
+    name = name:gsub("%.[^%.]+$", "")
+    if name == "" then
+        name = "untitled"
+    end
+    return name
+end
+
+local function get_render_directory(proj)
+    local ok, render_dir = reaper.GetSetProjectInfo_String(proj, "RENDER_FILE", "", false)
+    if not ok or not render_dir or render_dir == "" then
+        return get_project_directory(proj)
+    end
+
+    if path_is_absolute(render_dir) then
+        return render_dir
+    end
+
+    return join_path(get_project_directory(proj), render_dir)
+end
+
+local function expand_render_pattern_for_region(proj, pattern, region)
+    local result = pattern or ""
+    local region_name = region.name ~= "" and region.name or tostring(region.number or "")
+    result = result:gsub("%$regionnumber", function()
+        return tostring(region.number or "")
+    end)
+    result = result:gsub("%$region", function()
+        return region_name
+    end)
+    result = result:gsub("%$project", function()
+        return get_project_stem(proj)
+    end)
+    if result:find("$", 1, true) then
+        return nil
+    end
+    return result
+end
+
+local function has_probable_extension(path)
+    local leaf = path:match("([^/\\]+)$") or path
+    return leaf:match("%.[A-Za-z0-9]+$") ~= nil
+end
+
+local function find_existing_render_path(proj, pattern, region)
+    local expanded = expand_render_pattern_for_region(proj, pattern, region)
+    if not expanded or expanded == "" then
+        return nil, false
+    end
+
+    local stem = join_path(get_render_directory(proj), expanded)
+    if has_probable_extension(stem) then
+        return file_exists(stem) and stem or nil, true
+    end
+
+    for i = 1, #COMMON_RENDER_EXTENSIONS do
+        local candidate = stem .. COMMON_RENDER_EXTENSIONS[i]
+        if file_exists(candidate) then
+            return candidate, true
+        end
+    end
+
+    return nil, true
+end
+
+local function filter_regions_for_existing_outputs(proj, pattern, regions, skip_existing)
+    local missing_regions = {}
+    local existing = {}
+    local unchecked = 0
+
+    for i = 1, #regions do
+        local region = regions[i]
+        local existing_path, checked = find_existing_render_path(proj, pattern, region)
+        if existing_path then
+            existing[#existing + 1] = {
+                region = region,
+                path = existing_path
+            }
+            if not skip_existing then
+                missing_regions[#missing_regions + 1] = region
+            end
+        else
+            if not checked then
+                unchecked = unchecked + 1
+            end
+            missing_regions[#missing_regions + 1] = region
+        end
+    end
+
+    return missing_regions, existing, unchecked
+end
+
+local function region_rows_label(regions)
+    local labels = {}
+    for i = 1, #regions do
+        labels[#labels + 1] = "R" .. tostring(regions[i].queue_row_index or "?")
+    end
+    return table.concat(labels, ", ")
+end
+
+local function log_existing_output_result(label, existing, unchecked, skip_existing)
+    if #existing > 0 then
+        log(string.format(
+            "%s: %d likely existing output(s)%s.",
+            label,
+            #existing,
+            skip_existing and " skipped" or " found; queueing anyway"
+        ))
+        local limit = math.min(#existing, 8)
+        for i = 1, limit do
+            log(string.format("  existing: %s", existing[i].path))
+        end
+        if #existing > limit then
+            log(string.format("  ...and %d more.", #existing - limit))
+        end
+    end
+
+    if unchecked > 0 then
+        log(string.format(
+            "%s: %d output path(s) could not be checked because the render pattern has unresolved wildcards.",
+            label,
+            unchecked
+        ))
+    end
+end
+
 main = function()
     local proj = 0
 
