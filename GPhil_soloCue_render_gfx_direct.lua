@@ -781,12 +781,7 @@ local function regular_row_group_key(row)
         return "disabled"
     end
 
-    return table.concat({
-        numeric_group_key(row.base_tempo),
-        numeric_group_key(row.start_tempo),
-        numeric_group_key(row.end_tempo),
-        numeric_group_key(row.step)
-    }, "|")
+    return numeric_group_key(row.base_tempo)
 end
 
 local function assign_regular_row_group_ids(rows)
@@ -831,22 +826,20 @@ end
 
 local function describe_group(group)
     return string.format(
-        "%s (%s), base %g, target %s",
+        "%s (%s), base %g",
         row_list_label(group),
         region_count_label(#group.regions),
-        group.base_tempo or 0,
-        group.target_tempo and tostring(group.target_tempo) or "click"
+        group.base_tempo or 0
     )
 end
 
 local function build_queue_summary(rows, tempo_multiplier)
-    local click_groups, regular_groups = build_per_region_queue_groups(rows, tempo_multiplier)
+    local groups = build_per_region_queue_groups(rows, tempo_multiplier)
     local enabled_count = count_enabled_rows(rows)
-    local click_region_count = count_group_regions(click_groups)
-    local regular_region_count = count_group_regions(regular_groups)
+    local region_count = count_group_regions(groups)
     local skipped_count = #rows - enabled_count
-    local ungrouped_entries = click_region_count + regular_region_count
-    local grouped_entries = #click_groups + #regular_groups
+    local ungrouped_entries = region_count
+    local grouped_entries = #groups
     local saved_entries = ungrouped_entries - grouped_entries
     if saved_entries < 0 then
         saved_entries = 0
@@ -856,25 +849,18 @@ local function build_queue_summary(rows, tempo_multiplier)
         string.format("Enabled rows: %d of %d", enabled_count, #rows),
         string.format("Skipped rows: %d", skipped_count),
         string.format(
-            "Regular: %d queue project(s), %d region render(s)",
-            #regular_groups,
-            regular_region_count
-        ),
-        string.format(
-            "Click: %d queue project(s), %d region render(s)",
-            #click_groups,
-            click_region_count
+            "Solo-Cue: %d queue project(s), %d region render(s)",
+            #groups,
+            region_count
         ),
         string.format("Grouping avoids %d separate queue entr%s.", saved_entries, saved_entries == 1 and "y" or "ies"),
-        "Grouping rule: same base tempo + same target tempo."
+        "Grouping rule: same base tempo."
     }
 
     return {
-        click_groups = click_groups,
-        regular_groups = regular_groups,
+        groups = groups,
         enabled_count = enabled_count,
-        click_region_count = click_region_count,
-        regular_region_count = regular_region_count,
+        region_count = region_count,
         grouped_entries = grouped_entries,
         summary_text = table.concat(lines, "\n")
     }
@@ -884,93 +870,47 @@ local function log_queue_plan(rows, tempo_multiplier, title)
     local plan = build_queue_summary(rows, tempo_multiplier)
     log(title or "Queue plan")
     log(plan.summary_text)
-    if #plan.click_groups > 0 then
-        log("Click groups:")
-        for i = 1, #plan.click_groups do
-            log(string.format("  C%d: %s", i, describe_group(plan.click_groups[i])))
-        end
-    end
-    if #plan.regular_groups > 0 then
-        log("Regular groups:")
-        for i = 1, #plan.regular_groups do
-            log(string.format("  G%d: %s", i, describe_group(plan.regular_groups[i])))
+    if #plan.groups > 0 then
+        log("Groups:")
+        for i = 1, #plan.groups do
+            log(string.format("  G%d: %s", i, describe_group(plan.groups[i])))
         end
     end
     return plan
 end
 
 build_per_region_queue_groups = function(configs, tempo_multiplier)
-    local click_groups = {}
-    local click_by_key = {}
-    local regular_groups = {}
-    local regular_by_key = {}
+    local groups = {}
+    local by_key = {}
 
     for row_index = 1, #configs do
         local cfg = configs[row_index]
-        if row_is_enabled(cfg) and cfg and cfg.base_tempo and cfg.base_tempo > 0 and cfg.step and cfg.step ~= 0 then
+        if row_is_enabled(cfg) and cfg.base_tempo and cfg.base_tempo > 0 then
             cfg.queue_row_index = row_index
             local base_actual = cfg.base_tempo * tempo_multiplier
             local base_suffix = tempo_suffix_value(cfg.base_tempo)
 
-            if cfg.render_click then
-                local click_key = table.concat({
-                    numeric_group_key(base_actual),
-                    base_suffix
-                }, "|")
-                local click_group = click_by_key[click_key]
-                if not click_group then
-                    click_group = {
-                        base_tempo = cfg.base_tempo,
-                        base_actual = base_actual,
-                        base_suffix = base_suffix,
-                        regions = {},
-                        row_indexes = {}
-                    }
-                    click_by_key[click_key] = click_group
-                    click_groups[#click_groups + 1] = click_group
-                end
-                add_region_to_group(click_group, cfg, row_index)
+            local key = table.concat({
+                numeric_group_key(base_actual),
+                base_suffix
+            }, "|")
+            local group = by_key[key]
+            if not group then
+                group = {
+                    base_tempo = cfg.base_tempo,
+                    base_actual = base_actual,
+                    base_suffix = base_suffix,
+                    regions = {},
+                    row_indexes = {}
+                }
+                by_key[key] = group
+                groups[#groups + 1] = group
             end
-
-            local tempo = cfg.start_tempo
-            local guard = 0
-            while (cfg.step > 0 and tempo <= cfg.end_tempo) or (cfg.step < 0 and tempo >= cfg.end_tempo) do
-                local target_tempo = tempo
-                local target_actual = target_tempo * tempo_multiplier
-                local factor = target_actual / base_actual
-                local tempo_display = tempo_suffix_value(target_tempo)
-                local regular_key = table.concat({
-                    numeric_group_key(base_actual),
-                    numeric_group_key(target_actual),
-                    tempo_display
-                }, "|")
-                local regular_group = regular_by_key[regular_key]
-                if not regular_group then
-                    regular_group = {
-                        base_tempo = cfg.base_tempo,
-                        base_actual = base_actual,
-                        target_tempo = target_tempo,
-                        target_actual = target_actual,
-                        factor = factor,
-                        tempo_display = tempo_display,
-                        regions = {},
-                        row_indexes = {}
-                    }
-                    regular_by_key[regular_key] = regular_group
-                    regular_groups[#regular_groups + 1] = regular_group
-                end
-                add_region_to_group(regular_group, cfg, row_index)
-
-                tempo = tempo + cfg.step
-                guard = guard + 1
-                if guard > 10000 then
-                    break
-                end
-            end
+            add_region_to_group(group, cfg, row_index)
         end
     end
 
-    return click_groups, regular_groups
+    return groups
 end
 
 local function default_per_region_tempo_range(base_tempo)
