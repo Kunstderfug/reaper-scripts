@@ -68,16 +68,21 @@ local function log(msg)
     reaper.ShowConsoleMsg(tostring(msg) .. "\n")
 end
 
-local function find_click_track(proj)
+local function get_track_by_name_contains(proj, name_fragment)
+    local lc = name_fragment:lower()
     local track_count = reaper.CountTracks(proj)
     for i = 0, track_count - 1 do
         local track = reaper.GetTrack(proj, i)
         local _, name = reaper.GetTrackName(track, "")
-        if name and name:lower():find("clicktrack") then
+        if name and name:lower():find(lc, 1, true) then
             return track
         end
     end
     return nil
+end
+
+local function find_solo_track(proj)
+    return get_track_by_name_contains(proj, SOLO_TRACK_NAME)
 end
 
 local function parse_bool(str, default_if_empty)
