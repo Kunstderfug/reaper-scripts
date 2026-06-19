@@ -261,7 +261,15 @@ local function get_take_ppq(item, take)
 end
 
 -- Encode a non-negative integer as a MIDI variable-length quantity.
+-- value may arrive as a float (REAPER's MIDI_GetPPQPosFromProjTime returns
+-- floating-point PPQ); round to nearest to minimize cumulative drift across
+-- events, and floor at zero since deltas must be non-negative. Rounding
+-- (rather than truncating) keeps later events from drifting systematically
+-- early. Lua's bitwise operators reject non-integer floats, so the coercion
+-- must happen before the first & / >>.
 local function encode_varlen(value)
+    if value < 0 then value = 0 end
+    value = math.floor(value + 0.5)
     local bytes = { value & 0x7F }
     value = value >> 7
     while value > 0 do
@@ -278,6 +286,12 @@ end
 
 -- Build a complete format-0 SMF from the merged event list.
 local function build_smf(events, ppq)
+    -- The SMF division field (ticks per quarter note) is an integer, but
+    -- ppq arrives as a float from MIDI_GetPPQPosFromProjQN. Coerce once;
+    -- Lua's bitwise operators reject non-integer floats.
+    ppq = math.floor(ppq + 0.5)
+    if ppq < 1 then ppq = 1 end
+
     -- Track body: for each event, varlen delta + raw message bytes.
     local body_parts = {}
     local last_ppq = 0
