@@ -49,6 +49,54 @@ local function sanitize_name_part(name)
     return text
 end
 
+-- Enumerate every region in the project as {pos, rgnend, name}.
+local function collect_regions(proj)
+    local regions = {}
+    local idx = 0
+    while true do
+        local retval, is_region, pos, rgnend, name = reaper.EnumProjectMarkers3(proj, idx)
+        if retval == 0 then
+            break
+        end
+        if is_region then
+            regions[#regions + 1] = {
+                pos = pos,
+                rgnend = rgnend,
+                name = name or ""
+            }
+        end
+        idx = idx + 1
+    end
+    return regions
+end
+
+-- Return the region whose [pos, rgnend] contains item_pos.
+-- On overlap, the region with the smallest pos wins.
+local function find_containing_region(regions, item_pos)
+    local best
+    for i = 1, #regions do
+        local r = regions[i]
+        if item_pos >= r.pos and item_pos <= r.rgnend then
+            if not best or r.pos < best.pos then
+                best = r
+            end
+        end
+    end
+    return best
+end
+
+-- Region's start BPM, read-only. Returns nil on failure.
+local function region_start_bpm(proj, region)
+    if not region then
+        return nil
+    end
+    local bpm = reaper.TimeMap2_GetDividedBpmAtTime(proj, region.pos)
+    if not bpm or bpm <= 0 then
+        return nil
+    end
+    return bpm
+end
+
 local function main()
     local proj = 0
     log("=== GPhil MIDI Solo Cue Export ===")
