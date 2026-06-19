@@ -70,13 +70,21 @@ local function collect_regions(proj)
     return regions
 end
 
+-- Tolerance for floating-point drift at region boundaries. A position that
+-- looks identical in the arrange view is routinely stored with sub-sample
+-- drift (e.g. region pos 10.0 vs item D_POSITION 9.9999999), which would
+-- make an exact >= / <= check wrongly reject an item sitting on the edge.
+-- Matches the eps used in GPhil_tempoSet_render_gfx_direct.lua.
+local REGION_EDGE_EPS = 0.0000005
+
 -- Return the region whose [pos, rgnend] contains item_pos.
 -- On overlap, the region with the smallest pos wins.
 local function find_containing_region(regions, item_pos)
     local best
     for i = 1, #regions do
         local r = regions[i]
-        if item_pos >= r.pos and item_pos <= r.rgnend then
+        if item_pos >= (r.pos - REGION_EDGE_EPS)
+           and item_pos <= (r.rgnend + REGION_EDGE_EPS) then
             if not best or r.pos < best.pos then
                 best = r
             end
@@ -399,7 +407,11 @@ local function main()
             log("WARN: skipping non-MIDI item: " .. (take_name or "<unnamed>"))
         elseif result == "skip_no_region" then
             skipped = skipped + 1
-            log("SKIP: item has no containing region: " .. (take_name or "<unnamed>"))
+            local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            log(string.format(
+                "SKIP: item has no containing region: %s  (item_pos=%.9f)",
+                take_name or "<unnamed>", item_pos
+            ))
         else
             skipped = skipped + 1
             log("SKIP: " .. (take_name or "<unnamed>"))
