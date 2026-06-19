@@ -305,10 +305,109 @@ local function build_smf(events, ppq)
     return main_header .. track_header .. body
 end
 
+local function export_item(proj, item, regions, project_stem)
+    local take = reaper.GetActiveTake(item)
+    if not take then
+        return "skip_no_take"
+    end
+    if not reaper.ValidatePtr2(proj, take, "MediaItem_Take*") then
+        return "skip_no_take"
+    end
+    if not reaper.TakeIsMIDI(take) then
+        return "warn_not_midi"
+    end
+
+    local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    local region = find_containing_region(regions, item_pos)
+    if not region then
+        return "skip_no_region"
+    end
+
+    local bpm = region_start_bpm(proj, region)
+    if not bpm then
+        return "skip_no_region"
+    end
+
+    local events = extract_midi_events(take)
+    if not events then
+        return "skip_no_take"
+    end
+
+    local merged = merge_tempo_events(proj, take, events, region)
+    local ppq = get_take_ppq(item, take)
+    local smf = build_smf(merged, ppq)
+
+    local tempo_suffix = tostring(round_tempo(bpm))
+    local region_name  = sanitize_name_part(region.name)
+    if region_name == "" then
+        region_name = "UNNAMED"
+    end
+    local proj_name    = sanitize_name_part(project_stem)
+
+    local _, take_name = reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+
+    local rel_dir = DIR_ROOT_REL .. DIR_SEP .. region_name
+    local filename = proj_name .. "_" .. region_name .. "_SOLO_CUE_" .. tempo_suffix .. ".mid"
+    local out_dir  = reaper.GetProjectPath(proj) .. DIR_SEP .. rel_dir
+    reaper.RecursiveCreateDirectory(out_dir, 0)
+
+    local out_path = out_dir .. DIR_SEP .. filename
+    local f = io.open(out_path, "wb")
+    if not f then
+        log("ERROR: could not open for write: " .. out_path)
+        return "skip_no_take"
+    end
+    f:write(smf)
+    f:close()
+
+    log(string.format(
+        "EXPORT: %s  (region=%s, tempo=%s, take=%s)",
+        out_path, region_name, tempo_suffix, take_name or "<unnamed>"
+    ))
+    return "exported"
+end
+
 local function main()
     local proj = 0
     log("=== GPhil MIDI Solo Cue Export ===")
-    log("(stub)")
+
+    local selected = reaper.CountSelectedMediaItems(proj)
+    local project_stem = get_project_stem(proj)
+    local regions = collect_regions(proj)
+    local out_root = reaper.GetProjectPath(proj) .. DIR_SEP .. DIR_ROOT_REL
+
+    log("Project: " .. project_stem)
+    log("Output root: " .. out_root)
+    log(string.format("Items selected: %d   Regions: %d", selected, #regions))
+    log("--------------------------------------")
+
+    local exported, skipped, warned = 0, 0, 0
+
+    for i = 0, selected - 1 do
+        local item = reaper.GetSelectedMediaItem(proj, i)
+        local _, take_name
+        local take = item and reaper.GetActiveTake(item) or nil
+        if take then
+            _, take_name = reaper.GetSetMediaItemTakeInfo_String(take, "P_NAME", "", false)
+        end
+
+        local result = export_item(proj, item, regions, project_stem)
+        if result == "exported" then
+            exported = exported + 1
+        elseif result == "warn_not_midi" then
+            warned = warned + 1
+            log("WARN: skipping non-MIDI item: " .. (take_name or "<unnamed>"))
+        elseif result == "skip_no_region" then
+            skipped = skipped + 1
+            log("SKIP: item has no containing region: " .. (take_name or "<unnamed>"))
+        else
+            skipped = skipped + 1
+            log("SKIP: " .. (take_name or "<unnamed>"))
+        end
+    end
+
+    log("--------------------------------------")
+    log(string.format("Exported: %d   Skipped: %d   Warned: %d", exported, skipped, warned))
 end
 
 main()
