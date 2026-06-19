@@ -97,6 +97,37 @@ local function region_start_bpm(proj, region)
     return bpm
 end
 
+-- Extract the take's MIDI events into a list of
+-- { ppq = absolute_ppq, msg = bytes_string, flags = int }.
+-- Meta events (status 0xFF) are preserved as-is; they will be filtered
+-- out before writing so only our injected tempo/timesig meta events remain.
+local function extract_midi_events(take)
+    local ok, midi_str = reaper.MIDI_GetAllEvts(take, "")
+    if not ok then
+        return nil
+    end
+
+    local events = {}
+    local len = midi_str:len()
+    local pos = 1
+    local ppq = 0
+    local unpack = string.unpack
+
+    while pos <= len do
+        local offset, flags, msg, next_pos = unpack("i4Bs4", midi_str, pos)
+        ppq = ppq + offset
+        events[#events + 1] = {
+            ppq = ppq,
+            flags = flags,
+            msg = msg,
+            is_meta = (msg:byte(1) == 0xFF)
+        }
+        pos = next_pos
+    end
+
+    return events
+end
+
 local function main()
     local proj = 0
     log("=== GPhil MIDI Solo Cue Export ===")
