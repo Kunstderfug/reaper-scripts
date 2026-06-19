@@ -155,24 +155,62 @@ local function extract_midi_events(take)
     return events
 end
 
--- Collect project tempo markers whose timepos (seconds) falls inside
--- [region.pos, region.rgnend].
+-- Collect tempo/meter events for a region.
+-- Always emit the active tempo/time signature at region.pos, even when the
+-- project marker that defines it lives before the region. Then append explicit
+-- tempo/time-signature markers inside the region.
 local function collect_region_tempo_markers(proj, region)
     local out = {}
+    local seen = {}
+
+    local function append_event(timepos, bpm)
+        local timesig_num, timesig_denom, active_tempo =
+            reaper.TimeMap_GetTimeSigAtTime(proj, timepos)
+        local event_bpm = (bpm and bpm > 0) and bpm or active_tempo
+        if not event_bpm or event_bpm <= 0 then
+            event_bpm = reaper.TimeMap2_GetDividedBpmAtTime(proj, timepos)
+        end
+        if not event_bpm or event_bpm <= 0 then
+            return
+        end
+
+        local key = string.format("%.9f", timepos)
+        if seen[key] then
+            out[seen[key]] = {
+                timepos = timepos,
+                bpm = event_bpm,
+                timesig_num = timesig_num,
+                timesig_denom = timesig_denom
+            }
+            return
+        end
+
+        out[#out + 1] = {
+            timepos = timepos,
+            bpm = event_bpm,
+            timesig_num = timesig_num,
+            timesig_denom = timesig_denom
+        }
+        seen[key] = #out
+    end
+
+    append_event(region.pos, nil)
+
     local cnt = reaper.CountTempoTimeSigMarkers(proj)
     for i = 0, cnt - 1 do
         local retval, timepos, measurepos, beatpos, bpm,
               timesig_num, timesig_denom, lineartempo =
             reaper.GetTempoTimeSigMarker(proj, i)
-        if retval and timepos >= region.pos and timepos <= region.rgnend then
-            out[#out + 1] = {
-                timepos = timepos,
-                bpm = bpm,
-                timesig_num = timesig_num,
-                timesig_denom = timesig_denom
-            }
+        if retval
+           and timepos > (region.pos + REGION_EDGE_EPS)
+           and timepos <= (region.rgnend + REGION_EDGE_EPS) then
+            append_event(timepos, bpm)
         end
     end
+
+    table.sort(out, function(a, b)
+        return a.timepos < b.timepos
+    end)
     return out
 end
 
