@@ -193,7 +193,7 @@ end
 -- Merge tempo/time-sig meta events into the take's event list.
 -- 1) Drop any existing meta events from the take (we own tempo/timesig).
 -- 2) Convert each region tempo marker's timepos -> take-relative PPQ
---    via MIDI_GetPPQPosFromTime.
+--    via MIDI_GetPPQPosFromProjTime.
 -- 3) Clamp markers that precede the take start to PPQ 0.
 -- 4) Return a new list sorted by ascending ppq; meta events at the same
 --    ppq as a note event sort BEFORE the note (standard SMF ordering).
@@ -207,11 +207,11 @@ local function merge_tempo_events(proj, take, events, region)
     end
 
     local markers = collect_region_tempo_markers(proj, region)
-    local take_start_ppq = reaper.MIDI_GetPPQPosFromTime(take, region.pos)
+    local take_start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, region.pos)
 
     for i = 1, #markers do
         local m = markers[i]
-        local ppq = reaper.MIDI_GetPPQPosFromTime(take, m.timepos)
+        local ppq = reaper.MIDI_GetPPQPosFromProjTime(take, m.timepos)
         if ppq < take_start_ppq then
             ppq = take_start_ppq
         end
