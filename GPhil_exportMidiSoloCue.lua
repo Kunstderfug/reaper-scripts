@@ -37,6 +37,25 @@ local function get_project_stem(proj)
     return name
 end
 
+local function get_project_root(proj)
+    local _, project_file = reaper.EnumProjects(proj, "")
+    local root = nil
+    if project_file and project_file ~= "" then
+        root = project_file:match("^(.*)[/\\][^/\\]+$")
+    end
+    if not root or root == "" then
+        root = reaper.GetProjectPath(proj)
+    end
+    if root then
+        root = root:gsub("[/\\]+$", "")
+        local parent = root:match("^(.*)[/\\][Mm][Ee][Dd][Ii][Aa]$")
+        if parent and parent ~= "" then
+            root = parent
+        end
+    end
+    return root
+end
+
 -- Replace characters illegal on macOS/Windows with _, collapse runs, trim ends.
 local function sanitize_name_part(name)
     local text = name or ""
@@ -370,7 +389,7 @@ local function export_item(proj, item, regions, project_stem)
 
     local rel_dir = DIR_ROOT_REL .. DIR_SEP .. region_name
     local filename = proj_name .. "_" .. region_name .. "_SOLO_CUE_" .. tempo_suffix .. ".mid"
-    local out_dir  = reaper.GetProjectPath(proj) .. DIR_SEP .. rel_dir
+    local out_dir  = get_project_root(proj) .. DIR_SEP .. rel_dir
     reaper.RecursiveCreateDirectory(out_dir, 0)
 
     local out_path = out_dir .. DIR_SEP .. filename
@@ -396,7 +415,7 @@ local function main()
     local selected = reaper.CountSelectedMediaItems(proj)
     local project_stem = get_project_stem(proj)
     local regions = collect_regions(proj)
-    local out_root = reaper.GetProjectPath(proj) .. DIR_SEP .. DIR_ROOT_REL
+    local out_root = get_project_root(proj) .. DIR_SEP .. DIR_ROOT_REL
 
     log("Project: " .. project_stem)
     log("Output root: " .. out_root)
