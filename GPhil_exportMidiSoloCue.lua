@@ -128,6 +128,121 @@ local function extract_midi_events(take)
     return events
 end
 
+-- Collect project tempo markers whose timepos (seconds) falls inside
+-- [region.pos, region.rgnend].
+local function collect_region_tempo_markers(proj, region)
+    local out = {}
+    local cnt = reaper.CountTempoTimeSigMarkers(proj)
+    for i = 0, cnt - 1 do
+        local retval, timepos, measurepos, beatpos, bpm,
+              timesig_num, timesig_denom, lineartempo =
+            reaper.GetTempoTimeSigMarker(proj, i)
+        if retval and timepos >= region.pos and timepos <= region.rgnend then
+            out[#out + 1] = {
+                timepos = timepos,
+                bpm = bpm,
+                timesig_num = timesig_num,
+                timesig_denom = timesig_denom
+            }
+        end
+    end
+    return out
+end
+
+-- Encode an unsigned integer as a 3-byte big-endian string.
+local function u24_be(value)
+    return string.char(
+        (value >> 16) & 0xFF,
+        (value >> 8) & 0xFF,
+        value & 0xFF
+    )
+end
+
+-- Build Set Tempo meta event bytes: FF 51 03 <mpqn_3_bytes>.
+-- mpqn = microseconds per quarter note = 60000000 / bpm.
+local function tempo_meta_msg(bpm)
+    local mpqn = math.floor(60000000.0 / bpm + 0.5)
+    return string.char(0xFF, 0x51, 0x03) .. u24_be(mpqn)
+end
+
+-- Build Time Signature meta event bytes: FF 58 04 nn dd cc bb.
+-- dd = log2(denom). REAPER returns 0 for "default" numerator/denominator;
+-- in that case treat it as 4/4 with standard MIDI clock values (24, 8).
+local function timesig_meta_msg(num, denom)
+    local nn = (num and num > 0) and num or 4
+    local d = (denom and denom > 0) and denom or 4
+    local dd = 0
+    local v = d
+    while v > 1 do
+        v = v >> 1
+        dd = dd + 1
+    end
+    -- cc = clocks per metronome click, bb = 32nd notes per 24 clocks.
+    -- Standard defaults: 24 and 8.
+    return string.char(0xFF, 0x58, 0x04, nn, dd, 24, 8)
+end
+
+-- Merge tempo/time-sig meta events into the take's event list.
+-- 1) Drop any existing meta events from the take (we own tempo/timesig).
+-- 2) Convert each region tempo marker's timepos -> take-relative PPQ
+--    via MIDI_GetPPQPosFromTime.
+-- 3) Clamp markers that precede the take start to PPQ 0.
+-- 4) Return a new list sorted by ascending ppq; meta events at the same
+--    ppq as a note event sort BEFORE the note (standard SMF ordering).
+local function merge_tempo_events(proj, take, events, region)
+    local cleaned = {}
+    for i = 1, #events do
+        local e = events[i]
+        if not e.is_meta then
+            cleaned[#cleaned + 1] = e
+        end
+    end
+
+    local markers = collect_region_tempo_markers(proj, region)
+    local take_start_ppq = reaper.MIDI_GetPPQPosFromTime(take, region.pos)
+
+    for i = 1, #markers do
+        local m = markers[i]
+        local ppq = reaper.MIDI_GetPPQPosFromTime(take, m.timepos)
+        if ppq < take_start_ppq then
+            ppq = take_start_ppq
+        end
+
+        if m.bpm and m.bpm > 0 then
+            cleaned[#cleaned + 1] = {
+                ppq = ppq,
+                flags = 0,
+                msg = tempo_meta_msg(m.bpm),
+                is_meta = true,
+                is_tempo = true
+            }
+        end
+
+        cleaned[#cleaned + 1] = {
+            ppq = ppq,
+            flags = 0,
+            msg = timesig_meta_msg(m.timesig_num, m.timesig_denom),
+            is_meta = true,
+            is_timesig = true
+        }
+    end
+
+    table.sort(cleaned, function(a, b)
+        if a.ppq ~= b.ppq then
+            return a.ppq < b.ppq
+        end
+        -- Tempo first, then time signature, then note/CC events.
+        local function rank(e)
+            if e.is_tempo then return 0 end
+            if e.is_timesig then return 1 end
+            return 2
+        end
+        return rank(a) < rank(b)
+    end)
+
+    return cleaned
+end
+
 local function main()
     local proj = 0
     log("=== GPhil MIDI Solo Cue Export ===")
