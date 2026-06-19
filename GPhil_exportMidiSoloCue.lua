@@ -243,6 +243,68 @@ local function merge_tempo_events(proj, take, events, region)
     return cleaned
 end
 
+-- Compute the MIDI file's PPQ (ticks per quarter note) from the take.
+-- Mirrors MPL's GetTakePPQ: map the item's time-start QN back to PPQ.
+local function get_take_ppq(item, take)
+    local position = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+    local offset   = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+    local qn = reaper.TimeMap2_timeToQN(nil, position - offset)
+    return reaper.MIDI_GetPPQPosFromProjQN(take, qn + 1)
+end
+
+-- Encode a non-negative integer as a MIDI variable-length quantity.
+local function encode_varlen(value)
+    local bytes = { value & 0x7F }
+    value = value >> 7
+    while value > 0 do
+        bytes[#bytes + 1] = (value & 0x7F) | 0x80
+        value = value >> 7
+    end
+    -- bytes were built LSB-first; reverse for output.
+    local out = {}
+    for i = #bytes, 1, -1 do
+        out[#out + 1] = string.char(bytes[i])
+    end
+    return table.concat(out)
+end
+
+-- Build a complete format-0 SMF from the merged event list.
+local function build_smf(events, ppq)
+    -- Track body: for each event, varlen delta + raw message bytes.
+    local body_parts = {}
+    local last_ppq = 0
+    for i = 1, #events do
+        local e = events[i]
+        local delta = e.ppq - last_ppq
+        if delta < 0 then delta = 0 end
+        body_parts[#body_parts + 1] = encode_varlen(delta)
+        body_parts[#body_parts + 1] = e.msg
+        last_ppq = e.ppq
+    end
+
+    -- End-of-track meta event: FF 2F 00 with zero delta.
+    body_parts[#body_parts + 1] = string.char(0x00, 0xFF, 0x2F, 0x00)
+    local body = table.concat(body_parts)
+
+    -- MTrk header: 'MTrk' + 4-byte big-endian body length.
+    local track_header = "MTrk"
+        .. string.char(
+            (body:len() >> 24) & 0xFF,
+            (body:len() >> 16) & 0xFF,
+            (body:len() >> 8) & 0xFF,
+            body:len() & 0xFF
+        )
+
+    -- MThd header: format 0, 1 track, ppq ticks per quarter note.
+    local main_header = "MThd"
+        .. string.char(0x00, 0x00, 0x00, 0x06) -- header length = 6
+        .. string.char(0x00, 0x00)             -- format 0
+        .. string.char(0x00, 0x01)             -- 1 track
+        .. string.char((ppq >> 8) & 0xFF, ppq & 0xFF)
+
+    return main_header .. track_header .. body
+end
+
 local function main()
     local proj = 0
     log("=== GPhil MIDI Solo Cue Export ===")
