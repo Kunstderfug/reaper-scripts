@@ -477,6 +477,103 @@ local function timesig_meta_msg(num, denom)
     return string.char(0xFF, 0x58, 0x04, nn, dd, 24, 8)
 end
 
+local function collect_region_tempo_markers(proj, region)
+    local out = {}
+    local seen = {}
+
+    local function append_event(timepos, bpm)
+        local timesig_num, timesig_denom, active_tempo =
+            reaper.TimeMap_GetTimeSigAtTime(proj, timepos)
+        local event_bpm = (bpm and bpm > 0) and bpm or active_tempo
+        if not event_bpm or event_bpm <= 0 then
+            event_bpm = reaper.TimeMap2_GetDividedBpmAtTime(proj, timepos)
+        end
+        if not event_bpm or event_bpm <= 0 then
+            return
+        end
+
+        local key = string.format("%.9f", timepos)
+        if seen[key] then
+            out[seen[key]] = {
+                timepos = timepos,
+                bpm = event_bpm,
+                timesig_num = timesig_num,
+                timesig_denom = timesig_denom
+            }
+            return
+        end
+
+        out[#out + 1] = {
+            timepos = timepos,
+            bpm = event_bpm,
+            timesig_num = timesig_num,
+            timesig_denom = timesig_denom
+        }
+        seen[key] = #out
+    end
+
+    append_event(region.pos, nil)
+
+    local cnt = reaper.CountTempoTimeSigMarkers(proj)
+    for i = 0, cnt - 1 do
+        local retval, timepos, _, _, bpm = reaper.GetTempoTimeSigMarker(proj, i)
+        if retval
+           and timepos > (region.pos + REGION_EDGE_EPS)
+           and timepos <= (region.rgnend + REGION_EDGE_EPS) then
+            append_event(timepos, bpm)
+        end
+    end
+
+    table.sort(out, function(a, b) return a.timepos < b.timepos end)
+    return out
+end
+
+local function merge_tempo_events(proj, take, events, region)
+    local cleaned = {}
+    for i = 1, #events do
+        local event = events[i]
+        if (event.msg or ""):byte(1) ~= 0xFF then
+            cleaned[#cleaned + 1] = event
+        end
+    end
+
+    local markers = collect_region_tempo_markers(proj, region)
+    local take_start_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, region.pos)
+
+    for i = 1, #markers do
+        local marker = markers[i]
+        local marker_ppq = reaper.MIDI_GetPPQPosFromProjTime(take, marker.timepos)
+        if marker_ppq < take_start_ppq then
+            marker_ppq = take_start_ppq
+        end
+
+        cleaned[#cleaned + 1] = {
+            ppq = marker_ppq,
+            flags = 0,
+            msg = tempo_meta_msg(marker.bpm),
+            is_tempo = true
+        }
+        cleaned[#cleaned + 1] = {
+            ppq = marker_ppq,
+            flags = 0,
+            msg = timesig_meta_msg(marker.timesig_num, marker.timesig_denom),
+            is_timesig = true
+        }
+    end
+
+    table.sort(cleaned, function(a, b)
+        if a.ppq ~= b.ppq then return a.ppq < b.ppq end
+        local function rank(event)
+            if event.is_tempo then return 0 end
+            if event.is_timesig then return 1 end
+            return 2
+        end
+        return rank(a) < rank(b)
+    end)
+
+    return cleaned
+end
+
 local function encode_varlen(value)
     value = math.max(0, math.floor(value + 0.5))
     local bytes = { value & 0x7F }
@@ -500,22 +597,15 @@ local function get_take_ppq(item, take)
     return math.max(1, math.floor((ppq or 960) + 0.5))
 end
 
-local function build_smf(events, ppq, bpm, timesig_num, timesig_denom)
-    local body_parts = {
-        encode_varlen(0),
-        tempo_meta_msg(bpm),
-        encode_varlen(0),
-        timesig_meta_msg(timesig_num, timesig_denom)
-    }
+local function build_smf(events, ppq)
+    local body_parts = {}
     local last_ppq = 0
     for i = 1, #events do
         local event = events[i]
-        if (event.msg or ""):byte(1) ~= 0xFF then
-            local ppq_pos = math.max(0, math.floor(event.ppq + 0.5))
-            body_parts[#body_parts + 1] = encode_varlen(ppq_pos - last_ppq)
-            body_parts[#body_parts + 1] = event.msg
-            last_ppq = ppq_pos
-        end
+        local ppq_pos = math.max(0, math.floor(event.ppq + 0.5))
+        body_parts[#body_parts + 1] = encode_varlen(ppq_pos - last_ppq)
+        body_parts[#body_parts + 1] = event.msg
+        last_ppq = ppq_pos
     end
     body_parts[#body_parts + 1] = string.char(0x00, 0xFF, 0x2F, 0x00)
     local body = table.concat(body_parts)
@@ -685,7 +775,6 @@ local function main()
     local item_pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
     local bpm = reaper.TimeMap2_GetDividedBpmAtTime(proj, item_pos)
     if not bpm or bpm <= 0 then bpm = 60 end
-    local timesig_num, timesig_denom = reaper.TimeMap_GetTimeSigAtTime(proj, item_pos)
     local ppq = get_take_ppq(item, take)
     local section_name = sanitize_name_part(region.name ~= "" and region.name or tostring(region.number or "section"))
     local project_root = get_project_directory(proj)
@@ -764,7 +853,8 @@ local function main()
             local audio_stem = section_name .. "_" .. variant_id .. "_" .. options.render_profile
             local midi_path = join_path(out_dir, audio_stem .. ".mid")
             local map_path = join_path(out_dir, section_name .. "_" .. variant_id .. "_timing_map.json")
-            local smf = build_smf(variant_events, ppq, bpm, timesig_num, timesig_denom)
+            local merged_events = merge_tempo_events(proj, take, variant_events, region)
+            local smf = build_smf(merged_events, ppq)
             if write_file(midi_path, smf, "wb") then
                 midi_written = midi_written + 1
             else
