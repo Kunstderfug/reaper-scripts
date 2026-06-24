@@ -91,6 +91,26 @@ local function find_click_track(proj)
     return nil
 end
 
+local function find_solo_track(proj)
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        local _, name = reaper.GetTrackName(track, "")
+        local normalized = (name or ""):match("^%s*(.-)%s*$"):lower()
+        if normalized == "solo" then
+            return track
+        end
+    end
+    return nil
+end
+
+local function select_only_track(track)
+    reaper.Main_OnCommand(40297, 0)
+    if track and reaper.ValidatePtr2(0, track, "MediaTrack*") then
+        reaper.SetTrackSelected(track, true)
+    end
+end
+
 local function get_track_by_name_contains(proj, name_fragment)
     local lc = name_fragment:lower()
     local track_count = reaper.CountTracks(proj)
@@ -1863,6 +1883,39 @@ local function log_existing_output_result(label, existing, unchecked, skip_exist
     end
 end
 
+local function delete_existing_outputs(label, existing, skip_existing)
+    if skip_existing or #existing == 0 then
+        return true, 0
+    end
+
+    local seen = {}
+    local deleted = 0
+    local failed = 0
+    for i = 1, #existing do
+        local path = existing[i].path
+        if path and not seen[path] then
+            seen[path] = true
+            if file_exists(path) then
+                local ok, err = os.remove(path)
+                if ok then
+                    deleted = deleted + 1
+                    log(string.format("%s: deleted existing output before queueing: %s", label, path))
+                else
+                    failed = failed + 1
+                    log(string.format(
+                        "%s: could not delete existing output before queueing: %s%s",
+                        label,
+                        path,
+                        err and (" (" .. tostring(err) .. ")") or ""
+                    ))
+                end
+            end
+        end
+    end
+
+    return failed == 0, deleted
+end
+
 main = function()
     local proj = 0
 
@@ -1929,6 +1982,7 @@ main = function()
     local end_tempo_actual = end_tempo * tempo_multiplier
 
     local click_track = find_click_track(proj)
+    local solo_track = find_solo_track(proj)
     local per_region_configs = nil
     local region_selection_scope = "all regions"
     local pending_rows = nil
@@ -2006,6 +2060,12 @@ main = function()
         original_click_mute = reaper.GetMediaTrackInfo_Value(click_track, "B_MUTE")
     end
 
+    local original_solo_mute = nil
+    if solo_track then
+        original_solo_mute = reaper.GetMediaTrackInfo_Value(solo_track, "B_MUTE")
+        reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", 1)
+    end
+
     -- Save original track selection
     local prev_sel = {}
     local track_count = reaper.CountTracks(proj)
@@ -2035,6 +2095,10 @@ main = function()
             reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
         end
 
+        if solo_track and original_solo_mute ~= nil and reaper.ValidatePtr2(0, solo_track, "MediaTrack*") then
+            reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", original_solo_mute)
+        end
+
         restore_track_selection()
 
         reaper.UpdateArrange()
@@ -2060,6 +2124,12 @@ main = function()
         log("CLICKTRACK found: " .. (name or "<unnamed>"))
     else
         log("CLICKTRACK not found (name contains 'CLICKTRACK').")
+    end
+    if solo_track then
+        local _, name = reaper.GetTrackName(solo_track, "")
+        log("SOLO track muted for queued renders: " .. (name or "<unnamed>"))
+    else
+        log("SOLO track not found (name exactly 'SOLO').")
     end
     log(string.format("Range (display): %g to %g step %g", start_tempo, end_tempo, step))
     log(string.format(
@@ -2116,8 +2186,7 @@ main = function()
                         ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
                     end
 
-                    reaper.Main_OnCommand(40297, 0)
-                    reaper.SetTrackSelected(click_track, true)
+                    select_only_track(click_track)
                     if original_click_mute ~= nil then
                         reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 0)
                     end
@@ -2143,20 +2212,33 @@ main = function()
                         if #active_regions == 0 then
                             log(string.format("CLICK group %d SKIP: all likely outputs already exist.", group_index))
                         else
-                            select_regions(proj, active_regions)
-                            reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
-                            reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                            reaper.UpdateArrange()
-                            queued_click_count = queued_click_count + 1
-                            queued_click_region_count = queued_click_region_count + #active_regions
-                            log(string.format(
-                                "CLICK group %d QUEUED: %s (%s), base %g -> %s",
-                                group_index,
-                                region_rows_label(active_regions),
-                                region_count_label(#active_regions),
-                                group.base_tempo,
-                                click_pattern
-                            ))
+                            local delete_ok = delete_existing_outputs(
+                                string.format("CLICK group %d", group_index),
+                                existing,
+                                queue_options.skip_existing
+                            )
+                            if not delete_ok then
+                                log(string.format(
+                                    "CLICK group %d SKIP: one or more existing outputs could not be deleted.",
+                                    group_index
+                                ))
+                            else
+                                select_regions(proj, active_regions)
+                                select_only_track(click_track)
+                                reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+                                reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                                reaper.UpdateArrange()
+                                queued_click_count = queued_click_count + 1
+                                queued_click_region_count = queued_click_region_count + #active_regions
+                                log(string.format(
+                                    "CLICK group %d QUEUED: %s (%s), base %g -> %s",
+                                    group_index,
+                                    region_rows_label(active_regions),
+                                    region_count_label(#active_regions),
+                                    group.base_tempo,
+                                    click_pattern
+                                ))
+                            end
                         end
                     else
                         log(string.format(
@@ -2224,22 +2306,34 @@ main = function()
                 if #active_regions == 0 then
                     log(string.format("STEMS group %d SKIP: all likely outputs already exist.", group_index))
                 else
-                    select_regions(proj, active_regions)
-                    reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
-                    reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-                    reaper.UpdateArrange()
-                    queued_regular_count = queued_regular_count + 1
-                    queued_regular_region_count = queued_regular_region_count + #active_regions
-                    log(string.format(
-                        "STEMS group %d QUEUED: %s (%s), tempo %g (base %g, factor %.6f) -> %s",
-                        group_index,
-                        region_rows_label(active_regions),
-                        region_count_label(#active_regions),
-                        group.target_tempo,
-                        group.base_tempo,
-                        group.factor,
-                        new_pattern
-                    ))
+                    local delete_ok = delete_existing_outputs(
+                        string.format("STEMS group %d", group_index),
+                        existing,
+                        queue_options.skip_existing
+                    )
+                    if not delete_ok then
+                        log(string.format(
+                            "STEMS group %d SKIP: one or more existing outputs could not be deleted.",
+                            group_index
+                        ))
+                    else
+                        select_regions(proj, active_regions)
+                        reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+                        reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                        reaper.UpdateArrange()
+                        queued_regular_count = queued_regular_count + 1
+                        queued_regular_region_count = queued_regular_region_count + #active_regions
+                        log(string.format(
+                            "STEMS group %d QUEUED: %s (%s), tempo %g (base %g, factor %.6f) -> %s",
+                            group_index,
+                            region_rows_label(active_regions),
+                            region_count_label(#active_regions),
+                            group.target_tempo,
+                            group.base_tempo,
+                            group.factor,
+                            new_pattern
+                        ))
+                    end
                 end
             end
         end
@@ -2268,8 +2362,7 @@ main = function()
                 end
 
                 -- Select only CLICKTRACK
-                reaper.Main_OnCommand(40297, 0)
-                reaper.SetTrackSelected(click_track, true)
+                select_only_track(click_track)
 
                 -- Unmute click
                 if original_click_mute ~= nil then
@@ -2282,6 +2375,7 @@ main = function()
                     local click_pattern = with_tempo_suffix(CLICK_PATTERN_BASE, tostring(base_suffix))
                     set_render_pattern(proj, click_pattern)
 
+                    select_only_track(click_track)
                     reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
                     reaper.UpdateArrange()
                     log(string.format(
@@ -2381,7 +2475,7 @@ main = function()
 
     log("--------------------------------------")
     log("Done. Queue entries added.")
-    log("Original tempo map, render settings, CLICKTRACK mute, stem mute states, selection, and region selection restored.")
+    log("Original tempo map, render settings, CLICKTRACK/SOLO mute, stem mute states, selection, and region selection restored.")
 end
 
 main()
