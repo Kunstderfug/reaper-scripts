@@ -22,6 +22,7 @@ local CLICK_PATTERN_BASE     = "CLICKDATA/$project_$region_120"
 local STEMS_PATTERN_BASE     = "AUDIO/$region/STEMS/$project_$region_155_$folders"
 
 local EXT_SECTION            = "GPHIL_STEMS_RENDER"
+local GLOBAL_STEMS_TRACK_NAME = "STEMS"
 local GFX_DIRECT_SELECTED_ONLY = true
 local PER_REGION_DEFAULT_STEP = 5
 local GROUP_KEY_SCALE = 1000000
@@ -68,7 +69,6 @@ local RENDER_STRING_KEYS = {
 }
 
 local STEM_TRACK_NAMES = {
-    "STEMS",
     "W_STEM",
     "B_STEM",
     "P_STEM",
@@ -118,6 +118,19 @@ local function get_track_by_name_contains(proj, name_fragment)
         local track = reaper.GetTrack(proj, i)
         local _, name = reaper.GetTrackName(track, "")
         if name and name:lower():find(lc, 1, true) then
+            return track
+        end
+    end
+    return nil
+end
+
+local function get_track_by_name_exact(proj, wanted_name)
+    local wanted = (wanted_name or ""):match("^%s*(.-)%s*$"):lower()
+    local track_count = reaper.CountTracks(proj)
+    for i = 0, track_count - 1 do
+        local track = reaper.GetTrack(proj, i)
+        local _, name = reaper.GetTrackName(track, "")
+        if ((name or ""):match("^%s*(.-)%s*$"):lower()) == wanted then
             return track
         end
     end
@@ -1664,19 +1677,29 @@ end
 
 local function capture_and_unmute_stem_tracks(proj)
     local state = {}
+    local seen = {}
+
+    local function capture_track(track)
+        if not track or seen[track] then
+            return
+        end
+        seen[track] = true
+        local muted = reaper.GetMediaTrackInfo_Value(track, "B_MUTE")
+        state[#state + 1] = {
+            track = track,
+            muted = muted
+        }
+        if muted == 1 then
+            reaper.SetMediaTrackInfo_Value(track, "B_MUTE", 0)
+        end
+    end
+
+    capture_track(get_track_by_name_exact(proj, GLOBAL_STEMS_TRACK_NAME))
+
     for i = 1, #STEM_TRACK_NAMES do
         local name = STEM_TRACK_NAMES[i]
         local track = get_track_by_name_contains(proj, name)
-        if track then
-            local muted = reaper.GetMediaTrackInfo_Value(track, "B_MUTE")
-            state[#state + 1] = {
-                track = track,
-                muted = muted
-            }
-            if muted == 1 then
-                reaper.SetMediaTrackInfo_Value(track, "B_MUTE", 0)
-            end
-        end
+        capture_track(track)
     end
     return state
 end

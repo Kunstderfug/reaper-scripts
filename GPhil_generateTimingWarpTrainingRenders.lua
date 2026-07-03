@@ -8,9 +8,10 @@
 --
 -- Output:
 --   STUDIO/analysis_workbench/ai/timing_warp_sources/<region>/performed/
---     <region>_perf_001_seed1234_piano1_dry.mid
+--     <region>_perf_001_seed1234.mid
 --     <region>_perf_001_seed1234_timing_map.json
---     <region>_perf_001_seed1234_piano1_dry.<render extension>
+--     <region>_perf_001_seed1234_solo_dry.<render extension>
+--     <region>_perf_001_seed1234_solo_wet.<render extension>
 
 ---@diagnostic disable-next-line: undefined-global
 local reaper = reaper
@@ -22,9 +23,12 @@ local EXT_SECTION = "gphilTimingWarpTraining"
 local DEFAULT_VARIATION_COUNT = 15
 local DEFAULT_TIMING_VARIATION_PCT = 10
 local DEFAULT_VELOCITY_VARIATION_PCT = 8
-local DEFAULT_RENDER_PROFILE = "piano1_dry"
 local DEFAULT_SEED = 1729
 local REGION_EDGE_EPS = 0.0000005
+local MULTI_TRACK_TARGETS = {
+    { track_name = "SOLO DRY", profile_suffix = "solo_dry" },
+    { track_name = "SOLO WET", profile_suffix = "solo_wet" }
+}
 
 local RENDER_NUMERIC_KEYS = {
     "RENDER_SETTINGS",
@@ -206,6 +210,49 @@ local function select_only_track(track)
     if track then
         reaper.SetTrackSelected(track, true)
     end
+end
+
+local function get_track_name(track)
+    local ok, name = reaper.GetTrackName(track, "")
+    return ok and (name or "") or ""
+end
+
+local function find_track_by_name(proj, wanted_name)
+    local wanted = (wanted_name or ""):lower()
+    for i = 0, reaper.CountTracks(proj) - 1 do
+        local track = reaper.GetTrack(proj, i)
+        if get_track_name(track):lower() == wanted then
+            return track
+        end
+    end
+    return nil
+end
+
+local function track_render_suffix(track)
+    local suffix = sanitize_name_part(get_track_name(track)):lower()
+    if suffix == "" or suffix == "unnamed" then
+        suffix = "track"
+    end
+    return suffix
+end
+
+local function find_midi_item_on_track_in_region(track, region, preferred_item)
+    if preferred_item and reaper.GetMediaItemTrack(preferred_item) == track then
+        return preferred_item, reaper.GetActiveTake(preferred_item)
+    end
+
+    local count = reaper.CountTrackMediaItems(track)
+    for i = 0, count - 1 do
+        local item = reaper.GetTrackMediaItem(track, i)
+        local take = item and reaper.GetActiveTake(item) or nil
+        if take and reaper.TakeIsMIDI(take) then
+            local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+            if pos >= (region.pos - REGION_EDGE_EPS) and pos <= (region.rgnend + REGION_EDGE_EPS) then
+                return item, take
+            end
+        end
+    end
+    return nil, nil
 end
 
 local function resolve_command(cmd_id)
@@ -659,6 +706,13 @@ local function write_timing_map(path, metadata)
     lines[#lines + 1] = '  "variantId": "' .. json_escape(metadata.variant_id) .. '",'
     lines[#lines + 1] = '  "midiPath": "' .. json_escape(metadata.midi_path) .. '",'
     lines[#lines + 1] = '  "audioStem": "' .. json_escape(metadata.audio_stem) .. '",'
+    if metadata.audio_stems and #metadata.audio_stems > 0 then
+        local stems = {}
+        for i = 1, #metadata.audio_stems do
+            stems[#stems + 1] = '"' .. json_escape(metadata.audio_stems[i]) .. '"'
+        end
+        lines[#lines + 1] = '  "audioStems": [' .. table.concat(stems, ", ") .. '],'
+    end
     lines[#lines + 1] = string.format('  "baseTempoBpm": %.6f,', metadata.bpm)
     lines[#lines + 1] = string.format('  "timingVariationPct": %.6f,', metadata.timing_pct)
     lines[#lines + 1] = string.format('  "velocityVariationPct": %.6f,', metadata.velocity_pct)
@@ -689,23 +743,18 @@ local function prompt_options(proj)
         local ok, value = reaper.GetProjExtState(proj, EXT_SECTION, key)
         return ok == 1 and tonumber(value) or fallback
     end
-    local function last_string(key, fallback)
-        local ok, value = reaper.GetProjExtState(proj, EXT_SECTION, key)
-        return ok == 1 and value or fallback
-    end
 
     local defaults = table.concat({
         tostring(last_num("variation_count", DEFAULT_VARIATION_COUNT)),
         tostring(last_num("timing_variation_pct", DEFAULT_TIMING_VARIATION_PCT)),
         tostring(last_num("velocity_variation_pct", DEFAULT_VELOCITY_VARIATION_PCT)),
-        tostring(last_num("seed", DEFAULT_SEED)),
-        last_string("render_profile", DEFAULT_RENDER_PROFILE)
+        tostring(last_num("seed", DEFAULT_SEED))
     }, ",")
 
     local ok, csv = reaper.GetUserInputs(
         "Generate Timing-Warp Training Renders",
-        5,
-        "Variations,Timing +/- %,Velocity +/- %,Seed,Render profile",
+        4,
+        "Variations,Timing +/- %,Velocity +/- %,Seed",
         defaults
     )
     if not ok then return nil end
@@ -719,15 +768,13 @@ local function prompt_options(proj)
         variation_count = math.max(1, math.floor((tonumber(cols[1]) or DEFAULT_VARIATION_COUNT) + 0.5)),
         timing_variation_pct = clamp(tonumber(cols[2]) or DEFAULT_TIMING_VARIATION_PCT, 0, 40),
         velocity_variation_pct = clamp(tonumber(cols[3]) or DEFAULT_VELOCITY_VARIATION_PCT, 0, 40),
-        seed = math.floor((tonumber(cols[4]) or DEFAULT_SEED) + 0.5),
-        render_profile = sanitize_name_part(cols[5] ~= "" and cols[5] or DEFAULT_RENDER_PROFILE)
+        seed = math.floor((tonumber(cols[4]) or DEFAULT_SEED) + 0.5)
     }
 
     reaper.SetProjExtState(proj, EXT_SECTION, "variation_count", tostring(options.variation_count))
     reaper.SetProjExtState(proj, EXT_SECTION, "timing_variation_pct", tostring(options.timing_variation_pct))
     reaper.SetProjExtState(proj, EXT_SECTION, "velocity_variation_pct", tostring(options.velocity_variation_pct))
     reaper.SetProjExtState(proj, EXT_SECTION, "seed", tostring(options.seed))
-    reaper.SetProjExtState(proj, EXT_SECTION, "render_profile", options.render_profile)
     return options
 end
 
@@ -748,6 +795,59 @@ local function main()
     local options = prompt_options(proj)
     if not options then return end
 
+    local target_tracks = {}
+    local all_named_targets_found = true
+    for i = 1, #MULTI_TRACK_TARGETS do
+        local spec = MULTI_TRACK_TARGETS[i]
+        local candidate = find_track_by_name(proj, spec.track_name)
+        if candidate then
+            target_tracks[#target_tracks + 1] = {
+                track = candidate,
+                item = nil,
+                take = nil,
+                name = spec.track_name,
+                profile_suffix = spec.profile_suffix
+            }
+        else
+            all_named_targets_found = false
+            break
+        end
+    end
+    if not all_named_targets_found then
+        target_tracks = {
+            {
+                track = track,
+                item = item,
+                take = take,
+                name = get_track_name(track),
+                profile_suffix = track_render_suffix(track)
+            }
+        }
+    end
+
+    for i = 1, #target_tracks do
+        local target = target_tracks[i]
+        local target_item, target_take = find_midi_item_on_track_in_region(target.track, region, item)
+        if not target_item or not target_take then
+            reaper.ShowMessageBox(
+                "Could not find a MIDI item inside the selected region on track: " .. target.name,
+                "GPhil Timing-Warp Training",
+                0
+            )
+            return
+        end
+        target.item = target_item
+        target.take = target_take
+        target.original_mute = reaper.GetMediaTrackInfo_Value(target.track, "B_MUTE")
+        target.original_length = reaper.GetMediaItemInfo_Value(target.item, "D_LENGTH")
+        local target_midi_ok, target_midi = reaper.MIDI_GetAllEvts(target.take, "")
+        if not target_midi_ok then
+            reaper.ShowMessageBox("Could not read MIDI take on track: " .. target.name, "GPhil Timing-Warp Training", 0)
+            return
+        end
+        target.original_midi = target_midi
+    end
+
     local original_midi_ok, original_midi = reaper.MIDI_GetAllEvts(take, "")
     if not original_midi_ok then
         reaper.ShowMessageBox("Could not read selected MIDI take.", "GPhil Timing-Warp Training", 0)
@@ -756,7 +856,6 @@ local function main()
     local original_length = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
     local original_render_state = capture_render_state(proj)
     local original_region_selection = capture_region_selection(proj)
-    local original_mute = reaper.GetMediaTrackInfo_Value(track, "B_MUTE")
     local original_selected_tracks = {}
     for i = 0, reaper.CountTracks(proj) - 1 do
         local candidate = reaper.GetTrack(proj, i)
@@ -787,12 +886,18 @@ local function main()
     log("Section: " .. section_name)
     log("Output: " .. out_dir)
     log(string.format(
-        "Variations: %d, timing +/- %.2f%%, velocity +/- %.2f%%, render profile: %s",
+        "Variations: %d, timing +/- %.2f%%, velocity +/- %.2f%%",
         options.variation_count,
         options.timing_variation_pct,
-        options.velocity_variation_pct,
-        options.render_profile
+        options.velocity_variation_pct
     ))
+    if #target_tracks > 1 then
+        local names = {}
+        for i = 1, #target_tracks do
+            names[#names + 1] = target_tracks[i].name
+        end
+        log("Render targets: " .. table.concat(names, ", "))
+    end
     log("--------------------------------------")
 
     local temp_region_indices = {}
@@ -801,14 +906,22 @@ local function main()
     local maps_written = 0
 
     local function restore_original_state()
-        reaper.MIDI_SetAllEvts(take, original_midi)
-        reaper.MIDI_Sort(take)
-        reaper.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
+        for i = 1, #target_tracks do
+            local target = target_tracks[i]
+            reaper.MIDI_SetAllEvts(target.take, target.original_midi)
+            reaper.MIDI_Sort(target.take)
+            reaper.SetMediaItemInfo_Value(target.item, "D_LENGTH", target.original_length)
+            if target.original_mute ~= nil then
+                reaper.SetMediaTrackInfo_Value(target.track, "B_MUTE", target.original_mute)
+            end
+        end
+        if #target_tracks == 0 then
+            reaper.MIDI_SetAllEvts(take, original_midi)
+            reaper.MIDI_Sort(take)
+            reaper.SetMediaItemInfo_Value(item, "D_LENGTH", original_length)
+        end
         restore_render_state(proj, original_render_state)
         restore_region_selection(proj, original_region_selection)
-        if original_mute ~= nil then
-            reaper.SetMediaTrackInfo_Value(track, "B_MUTE", original_mute)
-        end
         reaper.Main_OnCommand(40297, 0)
         for i = 1, #original_selected_tracks do
             reaper.SetTrackSelected(original_selected_tracks[i], true)
@@ -836,8 +949,11 @@ local function main()
             local warp = build_attack_warp(attacks, options.timing_variation_pct, variant_seed)
             local variant_events = build_variant_events(events, warp, options.velocity_variation_pct, variant_seed)
             local midi_blob = encode_reaper_midi_events(variant_events)
-            reaper.MIDI_SetAllEvts(take, midi_blob)
-            reaper.MIDI_Sort(take)
+            for target_index = 1, #target_tracks do
+                local target = target_tracks[target_index]
+                reaper.MIDI_SetAllEvts(target.take, midi_blob)
+                reaper.MIDI_Sort(target.take)
+            end
 
             local last_ppq = 0
             for i = 1, #variant_events do
@@ -847,11 +963,18 @@ local function main()
             end
             local performed_length = ppq_to_ms(last_ppq, ppq, bpm) / 1000.0
             performed_length = math.max(0.25, performed_length + 0.25)
-            reaper.SetMediaItemInfo_Value(item, "D_LENGTH", performed_length)
+            for target_index = 1, #target_tracks do
+                reaper.SetMediaItemInfo_Value(target_tracks[target_index].item, "D_LENGTH", performed_length)
+            end
 
             local variant_id = string.format("perf_%03d_seed%d", variant_index, variant_seed)
-            local audio_stem = section_name .. "_" .. variant_id .. "_" .. options.render_profile
-            local midi_path = join_path(out_dir, audio_stem .. ".mid")
+            local base_stem = section_name .. "_" .. variant_id
+            local audio_stems = {}
+            for target_index = 1, #target_tracks do
+                audio_stems[target_index] = section_name .. "_" .. variant_id .. "_" .. target_tracks[target_index].profile_suffix
+            end
+            local audio_stem = audio_stems[1]
+            local midi_path = join_path(out_dir, base_stem .. ".mid")
             local map_path = join_path(out_dir, section_name .. "_" .. variant_id .. "_timing_map.json")
             local merged_events = merge_tempo_events(proj, take, variant_events, region)
             local smf = build_smf(merged_events, ppq)
@@ -865,6 +988,7 @@ local function main()
                 variant_id = variant_id,
                 midi_path = midi_path,
                 audio_stem = audio_stem,
+                audio_stems = audio_stems,
                 bpm = bpm,
                 timing_pct = options.timing_variation_pct,
                 velocity_pct = options.velocity_variation_pct,
@@ -901,16 +1025,20 @@ local function main()
                 end
             end
 
-            restore_render_state(proj, original_render_state)
-            apply_preset(CMD_APPLY_SOLO_CUE, "SOLO_CUE")
-            set_render_pattern(proj, "STUDIO/analysis_workbench/ai/timing_warp_sources/" .. section_name .. "/performed/" .. audio_stem)
-            reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
-            select_only_track(track)
-            reaper.SetMediaTrackInfo_Value(track, "B_MUTE", 0)
-            commit_arrange()
-            reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
-            queued = queued + 1
-            log(string.format("QUEUED %s", audio_stem))
+            for target_index = 1, #target_tracks do
+                local target = target_tracks[target_index]
+                local target_audio_stem = audio_stems[target_index]
+                restore_render_state(proj, original_render_state)
+                apply_preset(CMD_APPLY_SOLO_CUE, "SOLO_CUE")
+                set_render_pattern(proj, "STUDIO/analysis_workbench/ai/timing_warp_sources/" .. section_name .. "/performed/" .. target_audio_stem)
+                reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
+                select_only_track(target.track)
+                reaper.SetMediaTrackInfo_Value(target.track, "B_MUTE", 0)
+                commit_arrange()
+                reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                queued = queued + 1
+                log(string.format("QUEUED %s (%s)", target_audio_stem, target.name))
+            end
         end
     end, format_traceback)
 
