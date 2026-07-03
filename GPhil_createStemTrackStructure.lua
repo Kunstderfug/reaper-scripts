@@ -1,11 +1,9 @@
 -- GPhil_createStemTrackStructure.lua
--- Create a standard orchestral stem folder/child track structure.
+-- Create a standard stem folder/child track structure.
 --
--- Each stem is a render bus folder track with a same-named source child track
--- inside it. Section tracks are render buses too. Source child tracks feed the
--- individual stem bus through normal folder routing and also send to their
--- section bus in parallel, while stem bus parent sends are disabled to avoid
--- double-processing in section renders.
+-- Section tracks are render bus folders. Stem tracks are single child tracks
+-- under their section or root group, using abbreviation names so $folders can
+-- produce concise render filenames.
 
 ---@diagnostic disable-next-line: undefined-global
 local reaper = reaper
@@ -16,14 +14,14 @@ local EXT_SECTION = "GPhilCreateStemTrackStructure"
 local SCRIPT_TITLE = "Create Stem Track Structure"
 local GLOBAL_FOLDER_NAME = "STEMS"
 
-local FX_CHAIN_SUBDIR = "GPHIL"
-local MASTER_CHAIN = "GPHIL_STEM_MASTER.RfxChain"
+local FX_CHAIN_DIR = "/Volumes/PROJECTS/PROJECTS_IN_WORK/REAPER_PROJECTS/G-PHIL/FXChains/GPHIL"
 
-local SECTION_CHAIN_BY_CODE = {
+local FX_CHAIN_BY_CODE = {
     w = "GPHIL_STEM_W.RfxChain",
     b = "GPHIL_STEM_B.RfxChain",
     p = "GPHIL_STEM_P.RfxChain",
     s = "GPHIL_STEM_S.RfxChain",
+    band = "GPHIL_STEM_BAND.RfxChain",
 }
 
 -- Optional extra FX/plugin/action to apply after the automatic GPhil chains.
@@ -31,54 +29,62 @@ local DEFAULT_EXTRA_FX = ""
 local saved_selected_tracks = nil
 local current_color_map = nil
 
-local SECTION_STRUCTURE = {
-    {
-        code = "w",
-        name = "Woodwinds",
-        stems = {
-            { code = "fl", name = "Flutes" },
-            { code = "ob", name = "Oboes" },
-            { code = "cl", name = "Clarinets" },
-            { code = "bsn", name = "Bassoons" },
-        },
-    },
-    {
-        code = "b",
-        name = "Brass",
-        stems = {
-            { code = "hn", name = "Horns" },
-            { code = "tr", name = "Trumpets" },
-            { code = "tn", name = "Trombones" },
-            { code = "tb", name = "Tuba" },
-        },
-    },
-    {
-        code = "p",
-        name = "Percussion",
-        stems = {
-            { code = "ti", name = "Timpani" },
-            { code = "sd", name = "Snare Drum" },
-            { code = "bd", name = "Bass Drum" },
-            { code = "cy", name = "Cymbals" },
-            { code = "pi", name = "Piano" },
-        },
-    },
-    {
-        code = "s",
-        name = "Strings",
-        stems = {
-            { code = "vln1", name = "Violin1" },
-            { code = "vln2", name = "Violin2" },
-            { code = "vla", name = "Viola" },
-            { code = "vc", name = "Cello" },
-            { code = "db", name = "DoubleBasses" },
-        },
-    },
-}
+local function node(code, display_name, children)
+    children = children or {}
+    children.code = code
+    children.name = code
+    children.display_name = display_name
+    return children
+end
 
-local STANDALONE_STEMS = {
-    { code = "orch", name = "Orchestra" },
-    { code = "f", name = "Full Score" },
+local ROOT_GROUPS = {
+    node("orch", "Orchestra", {
+        sections = {
+            node("w", "Woodwinds", {
+                stems = {
+                    node("fl", "Flutes"),
+                    node("ob", "Oboes"),
+                    node("cl", "Clarinets"),
+                    node("bsn", "Bassoons"),
+                },
+            }),
+            node("b", "Brass", {
+                stems = {
+                    node("hn", "Horns"),
+                    node("tr", "Trumpets"),
+                    node("tn", "Trombones"),
+                    node("tb", "Tuba"),
+                },
+            }),
+            node("p", "Percussion", {
+                stems = {
+                    node("ti", "Timpani"),
+                    node("sd", "Snare Drum"),
+                    node("bd", "Bass Drum"),
+                    node("cy", "Cymbals"),
+                    node("pi", "Piano"),
+                },
+            }),
+            node("s", "Strings", {
+                stems = {
+                    node("vln1", "Violin1"),
+                    node("vln2", "Violin2"),
+                    node("vla", "Viola"),
+                    node("vc", "Cello"),
+                    node("db", "DoubleBasses"),
+                },
+            }),
+        },
+    }),
+    node("band", "Band", {
+        stems = {
+            node("sx", "Saxophones"),
+            node("lg", "Lead Guitar"),
+            node("bg", "Bass Guitar"),
+            node("dr", "Drums"),
+            node("ab", "A. Bass"),
+        },
+    }),
 }
 
 local CODE_ALIASES = {
@@ -147,11 +153,13 @@ local function create_color_map()
 
     local map = {
         global = random_color_entry(),
-        standalone = random_color_entry(),
     }
 
-    for _, section in ipairs(SECTION_STRUCTURE) do
-        map[section.code] = random_color_entry()
+    for _, root in ipairs(ROOT_GROUPS) do
+        map[root.code] = random_color_entry()
+        for _, section in ipairs(root.sections or {}) do
+            map[section.code] = random_color_entry()
+        end
     end
 
     return map
@@ -181,7 +189,7 @@ local function read_file(path)
 end
 
 local function get_chain_path(chain_file)
-    return table.concat({ reaper.GetResourcePath(), "FXChains", FX_CHAIN_SUBDIR, chain_file }, "/")
+    return FX_CHAIN_DIR .. "/" .. chain_file
 end
 
 local function load_chain_chunk(chain_file)
@@ -301,23 +309,17 @@ end
 
 local function apply_chain_files(track, chain_files)
     for _, chain_file in ipairs(chain_files or {}) do
+        if not file_exists(get_chain_path(chain_file)) then
+            goto continue
+        end
+
         local ok, err = append_fx_chain_to_track(track, chain_file)
         if not ok then
             return false, err
         end
-    end
-    return true
-end
 
-local function create_post_fader_send(source_track, destination_track)
-    local send_index = reaper.CreateTrackSend(source_track, destination_track)
-    if not send_index or send_index < 0 then
-        return false
+        ::continue::
     end
-
-    reaper.SetTrackSendInfo_Value(source_track, 0, send_index, "I_SENDMODE", 0) -- post-fader/post-pan
-    reaper.SetTrackSendInfo_Value(source_track, 0, send_index, "D_VOL", 1.0)
-    reaper.SetTrackSendInfo_Value(source_track, 0, send_index, "D_PAN", 0.0)
     return true
 end
 
@@ -359,45 +361,53 @@ local function create_global_folder(proj)
     return track
 end
 
-local function create_folder_pair(proj, stem, chain_files, extra_fx, section_track, color_entry)
-    local folder_track = insert_track_at_end(proj, stem.name)
-    local child_track = insert_track_at_end(proj, stem.name)
+local function create_stem_track(proj, stem, chain_files, extra_fx, color_entry)
+    local stem_track = insert_track_at_end(proj, stem.name)
+    reaper.SetMediaTrackInfo_Value(stem_track, "I_FOLDERDEPTH", 0)
+    set_track_color(stem_track, color_entry and vary_color_entry(color_entry))
 
-    reaper.SetMediaTrackInfo_Value(folder_track, "I_FOLDERDEPTH", 1)
-    reaper.SetMediaTrackInfo_Value(child_track, "I_FOLDERDEPTH", -1)
-    set_track_color(folder_track, color_entry and color_entry.color)
-    set_track_color(child_track, color_entry and vary_color_entry(color_entry))
-
-    if section_track then
-        -- Keep visual nesting without feeding the section bus with processed stem audio.
-        reaper.SetMediaTrackInfo_Value(folder_track, "B_MAINSEND", 0)
-        if not create_post_fader_send(child_track, section_track) then
-            return false, "Could not create parallel send from " .. stem.name .. " source to section bus."
-        end
-    end
-
-    local chains_ok, chain_err = apply_chain_files(folder_track, chain_files)
+    local chains_ok, chain_err = apply_chain_files(stem_track, chain_files)
     if not chains_ok then
         return false, chain_err
     end
 
-    if not add_fx_to_track(folder_track, extra_fx) then
-        return false, "Could not add FX/chain to folder track: " .. stem.name
+    if not add_fx_to_track(stem_track, extra_fx) then
+        return false, "Could not add FX/chain to stem track: " .. stem.name
     end
 
     return true
+end
+
+local function chain_files_for_code(code)
+    local chain_file = FX_CHAIN_BY_CODE[code]
+    return chain_file and { chain_file } or {}
+end
+
+local function display_label(item)
+    if item.display_name and item.display_name ~= item.name then
+        return item.code .. "  " .. item.display_name
+    end
+    return item.code
+end
+
+local function close_current_folder(proj)
+    local last_track = reaper.GetTrack(proj, reaper.CountTracks(proj) - 1)
+    if not last_track then
+        return
+    end
+
+    local depth = reaper.GetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH")
+    reaper.SetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH", depth - 1)
 end
 
 local function create_section(proj, section, extra_fx)
     local section_track = insert_track_at_end(proj, section.name)
     reaper.SetMediaTrackInfo_Value(section_track, "I_FOLDERDEPTH", 1)
 
-    local section_chain = SECTION_CHAIN_BY_CODE[section.code]
-    local section_chains = section_chain and { section_chain, MASTER_CHAIN } or { MASTER_CHAIN }
     local section_color = current_color_map and current_color_map[section.code]
     set_track_color(section_track, section_color and section_color.color)
 
-    local chains_ok, chain_err = apply_chain_files(section_track, section_chains)
+    local chains_ok, chain_err = apply_chain_files(section_track, chain_files_for_code(section.code))
     if not chains_ok then
         return false, chain_err
     end
@@ -406,73 +416,135 @@ local function create_section(proj, section, extra_fx)
         return false, "Could not add FX/chain to section folder track: " .. section.name
     end
 
-    local stem_chains = section_chain and { section_chain, MASTER_CHAIN } or { MASTER_CHAIN }
-    for _, stem in ipairs(section.stems) do
-        local ok, err = create_folder_pair(proj, stem, stem_chains, extra_fx, section_track, section_color)
+    for _, stem in ipairs(section.stems or {}) do
+        local ok, err = create_stem_track(
+            proj,
+            stem,
+            chain_files_for_code(section.code),
+            extra_fx,
+            section_color
+        )
         if not ok then
             return false, err
         end
     end
 
-    local last_track = reaper.GetTrack(proj, reaper.CountTracks(proj) - 1)
-    local depth = reaper.GetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH")
-    reaper.SetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH", depth - 1)
+    close_current_folder(proj)
+    return true
+end
+
+local function create_root_group(proj, group, extra_fx)
+    local group_track = insert_track_at_end(proj, group.name)
+    reaper.SetMediaTrackInfo_Value(group_track, "I_FOLDERDEPTH", 1)
+
+    local group_color = current_color_map and current_color_map[group.code]
+    set_track_color(group_track, group_color and group_color.color)
+
+    local chains_ok, chain_err = apply_chain_files(group_track, chain_files_for_code(group.code))
+    if not chains_ok then
+        return false, chain_err
+    end
+
+    if not add_fx_to_track(group_track, extra_fx) then
+        return false, "Could not add FX/chain to folder track: " .. group.name
+    end
+
+    for _, section in ipairs(group.sections or {}) do
+        local ok, err = create_section(proj, section, extra_fx)
+        if not ok then
+            return false, err
+        end
+    end
+
+    for _, stem in ipairs(group.stems or {}) do
+        local ok, err = create_stem_track(
+            proj,
+            stem,
+            chain_files_for_code(group.code),
+            extra_fx,
+            group_color
+        )
+        if not ok then
+            return false, err
+        end
+    end
+
+    close_current_folder(proj)
     return true
 end
 
 local function build_code_lookup()
     local lookup = {}
-    for _, section in ipairs(SECTION_STRUCTURE) do
-        lookup[section.code] = { kind = "section", value = section }
-        for _, stem in ipairs(section.stems) do
-            local section_chain = SECTION_CHAIN_BY_CODE[section.code]
-            local chain_files = section_chain and { section_chain, MASTER_CHAIN } or { MASTER_CHAIN }
+    for _, root in ipairs(ROOT_GROUPS) do
+        lookup[root.code] = { kind = "root", value = root, root = root }
+
+        for _, section in ipairs(root.sections or {}) do
+            lookup[section.code] = {
+                kind = "section",
+                value = section,
+                root = root,
+            }
+
+            for _, stem in ipairs(section.stems or {}) do
+                lookup[stem.code] = {
+                    kind = "stem",
+                    value = stem,
+                    root = root,
+                    section = section,
+                }
+            end
+        end
+
+        for _, stem in ipairs(root.stems or {}) do
             lookup[stem.code] = {
                 kind = "stem",
                 value = stem,
-                chain_files = chain_files,
-                color_key = section.code,
+                root = root,
             }
         end
-    end
-    for _, stem in ipairs(STANDALONE_STEMS) do
-        lookup[stem.code] = {
-            kind = "stem",
-            value = stem,
-            chain_files = { MASTER_CHAIN },
-            color_key = "standalone",
-        }
     end
     return lookup
 end
 
 local function build_picker_rows()
     local rows = {}
-    for _, section in ipairs(SECTION_STRUCTURE) do
+    for _, root in ipairs(ROOT_GROUPS) do
         rows[#rows + 1] = {
-            code = section.code,
-            name = section.name,
-            kind = "section",
-            label = section.code .. "  " .. section.name,
+            code = root.code,
+            name = root.display_name or root.name,
+            kind = "root",
+            label = display_label(root),
         }
-        for _, stem in ipairs(section.stems) do
+
+        for _, section in ipairs(root.sections or {}) do
+            rows[#rows + 1] = {
+                code = section.code,
+                name = section.display_name or section.name,
+                kind = "section",
+                root_code = root.code,
+                label = "  " .. display_label(section),
+            }
+            for _, stem in ipairs(section.stems or {}) do
+                rows[#rows + 1] = {
+                    code = stem.code,
+                    name = stem.display_name or stem.name,
+                    kind = "stem",
+                    root_code = root.code,
+                    section_code = section.code,
+                    label = "    " .. display_label(stem),
+                }
+            end
+        end
+
+        for _, stem in ipairs(root.stems or {}) do
             rows[#rows + 1] = {
                 code = stem.code,
-                name = stem.name,
+                name = stem.display_name or stem.name,
                 kind = "stem",
-                section_code = section.code,
-                label = "  " .. stem.code .. "  " .. stem.name,
+                root_code = root.code,
+                label = "  " .. display_label(stem),
             }
         end
-    end
-
-    for _, stem in ipairs(STANDALONE_STEMS) do
-        rows[#rows + 1] = {
-            code = stem.code,
-            name = stem.name,
-            kind = "stem",
-            label = stem.code .. "  " .. stem.name,
-        }
     end
 
     return rows
@@ -497,35 +569,153 @@ local function selected_set_to_codes(selected)
     return table.concat(codes, " ")
 end
 
-local function remove_child_codes_when_section_selected(selected)
-    for _, section in ipairs(SECTION_STRUCTURE) do
-        if selected[section.code] then
-            for _, stem in ipairs(section.stems) do
+local function remove_child_codes_when_parent_selected(selected)
+    for _, root in ipairs(ROOT_GROUPS) do
+        if selected[root.code] then
+            for _, section in ipairs(root.sections or {}) do
+                selected[section.code] = false
+                for _, stem in ipairs(section.stems or {}) do
+                    selected[stem.code] = false
+                end
+            end
+            for _, stem in ipairs(root.stems or {}) do
                 selected[stem.code] = false
+            end
+        else
+            for _, section in ipairs(root.sections or {}) do
+                if selected[section.code] then
+                    for _, stem in ipairs(section.stems or {}) do
+                        selected[stem.code] = false
+                    end
+                end
             end
         end
     end
     return selected
 end
 
-local function collect_requested_items(codes_text)
+local function copy_stem(stem)
+    return {
+        code = stem.code,
+        name = stem.name,
+        display_name = stem.display_name,
+    }
+end
+
+local function copy_section(section)
+    local section_copy = {
+        code = section.code,
+        name = section.name,
+        display_name = section.display_name,
+        stems = {},
+    }
+    for _, stem in ipairs(section.stems or {}) do
+        section_copy.stems[#section_copy.stems + 1] = copy_stem(stem)
+    end
+    return section_copy
+end
+
+local function copy_root(root)
+    local root_copy = {
+        code = root.code,
+        name = root.name,
+        display_name = root.display_name,
+        sections = {},
+        stems = {},
+    }
+    for _, section in ipairs(root.sections or {}) do
+        root_copy.sections[#root_copy.sections + 1] = copy_section(section)
+    end
+    for _, stem in ipairs(root.stems or {}) do
+        root_copy.stems[#root_copy.stems + 1] = copy_stem(stem)
+    end
+    return root_copy
+end
+
+local function find_plan_root(plan, root)
+    for _, entry in ipairs(plan) do
+        if entry.code == root.code then
+            return entry
+        end
+    end
+
+    local root_copy = {
+        code = root.code,
+        name = root.name,
+        display_name = root.display_name,
+        sections = {},
+        stems = {},
+    }
+    plan[#plan + 1] = root_copy
+    return root_copy
+end
+
+local function find_plan_section(root_plan, section)
+    for _, entry in ipairs(root_plan.sections or {}) do
+        if entry.code == section.code then
+            return entry
+        end
+    end
+
+    local section_copy = {
+        code = section.code,
+        name = section.name,
+        display_name = section.display_name,
+        stems = {},
+    }
+    root_plan.sections[#root_plan.sections + 1] = section_copy
+    return section_copy
+end
+
+local function add_unique_stem(stems, stem)
+    for _, entry in ipairs(stems) do
+        if entry.code == stem.code then
+            return
+        end
+    end
+    stems[#stems + 1] = copy_stem(stem)
+end
+
+local function add_requested_item_to_plan(plan, item)
+    if item.kind == "root" then
+        local root_plan = find_plan_root(plan, item.root)
+        local root_copy = copy_root(item.root)
+        root_plan.sections = root_copy.sections
+        root_plan.stems = root_copy.stems
+    elseif item.kind == "section" then
+        local root_plan = find_plan_root(plan, item.root)
+        local section_copy = copy_section(item.value)
+        local section_plan = find_plan_section(root_plan, item.value)
+        section_plan.stems = section_copy.stems
+    elseif item.kind == "stem" then
+        local root_plan = find_plan_root(plan, item.root)
+        if item.section then
+            local section_plan = find_plan_section(root_plan, item.section)
+            add_unique_stem(section_plan.stems, item.value)
+        else
+            add_unique_stem(root_plan.stems, item.value)
+        end
+    end
+end
+
+local function collect_requested_groups(codes_text)
     local lookup = build_code_lookup()
-    local requested = {}
+    local plan = {}
     local unknown = {}
     local seen = {}
 
     codes_text = trim(codes_text)
     if codes_text == "" then
-        return requested, unknown
+        return plan, unknown
     end
     if codes_text:lower() == "all" then
-        codes_text = selected_set_to_codes(selected_codes_to_set("w b p s orch f"))
+        codes_text = selected_set_to_codes(selected_codes_to_set("orch band"))
     else
-        codes_text = selected_set_to_codes(remove_child_codes_when_section_selected(selected_codes_to_set(codes_text)))
+        codes_text = selected_set_to_codes(remove_child_codes_when_parent_selected(selected_codes_to_set(codes_text)))
     end
 
     if codes_text == "" then
-        return requested, unknown
+        return plan, unknown
     end
 
     for _, code in ipairs(split_codes(codes_text)) do
@@ -533,60 +723,79 @@ local function collect_requested_items(codes_text)
         normalized = CODE_ALIASES[normalized] or normalized
         local item = lookup[normalized]
         if item and not seen[normalized] then
-            requested[#requested + 1] = item
+            add_requested_item_to_plan(plan, item)
             seen[normalized] = true
         elseif not item then
             unknown[#unknown + 1] = code
         end
     end
 
-    return requested, unknown
+    return plan, unknown
 end
 
-local function has_name_conflicts(proj, items)
+local function add_conflict_if_track_exists(proj, conflicts, name)
+    if find_track_by_name(proj, name) then
+        conflicts[#conflicts + 1] = name
+    end
+end
+
+local function has_name_conflicts(proj, groups)
     local conflicts = {}
 
-    if find_track_by_name(proj, GLOBAL_FOLDER_NAME) then
-        conflicts[#conflicts + 1] = GLOBAL_FOLDER_NAME
-    end
+    add_conflict_if_track_exists(proj, conflicts, GLOBAL_FOLDER_NAME)
 
-    for _, item in ipairs(items) do
-        if item.kind == "section" then
-            if find_track_by_name(proj, item.value.name) then
-                conflicts[#conflicts + 1] = item.value.name
+    for _, group in ipairs(groups) do
+        add_conflict_if_track_exists(proj, conflicts, group.name)
+        for _, section in ipairs(group.sections or {}) do
+            add_conflict_if_track_exists(proj, conflicts, section.name)
+            for _, stem in ipairs(section.stems or {}) do
+                add_conflict_if_track_exists(proj, conflicts, stem.name)
             end
-            for _, stem in ipairs(item.value.stems) do
-                if find_track_by_name(proj, stem.name) then
-                    conflicts[#conflicts + 1] = stem.name
-                end
-            end
-        elseif find_track_by_name(proj, item.value.name) then
-            conflicts[#conflicts + 1] = item.value.name
+        end
+        for _, stem in ipairs(group.stems or {}) do
+            add_conflict_if_track_exists(proj, conflicts, stem.name)
         end
     end
 
     return conflicts
 end
 
-local function validate_chain_files()
+local function collect_required_chain_files(groups)
+    local required = {}
+    local seen = {}
+
+    local function add_for_code(code)
+        local chain_file = FX_CHAIN_BY_CODE[code]
+        if chain_file and not seen[chain_file] then
+            required[#required + 1] = chain_file
+            seen[chain_file] = true
+        end
+    end
+
+    for _, group in ipairs(groups) do
+        add_for_code(group.code)
+        for _, section in ipairs(group.sections or {}) do
+            add_for_code(section.code)
+        end
+    end
+
+    return required
+end
+
+local function validate_chain_files(groups)
     local missing = {}
 
-    for _, chain_file in pairs(SECTION_CHAIN_BY_CODE) do
+    for _, chain_file in ipairs(collect_required_chain_files(groups)) do
         local path = get_chain_path(chain_file)
         if not file_exists(path) then
             missing[#missing + 1] = path
         end
     end
 
-    local master_path = get_chain_path(MASTER_CHAIN)
-    if not file_exists(master_path) then
-        missing[#missing + 1] = master_path
-    end
-
     if #missing > 0 then
         return false, missing
     end
-    return true
+    return true, missing
 end
 
 local function get_saved_settings()
@@ -609,24 +818,20 @@ end
 local function create_requested_structure(codes_text, settings)
     local proj = 0
 
-    local items, unknown = collect_requested_items(codes_text)
+    local groups, unknown = collect_requested_groups(codes_text)
     if #unknown > 0 then
         msg("Unknown code(s): " .. table.concat(unknown, ", "))
         return
     end
-    if #items == 0 then
+    if #groups == 0 then
         msg("No stem codes were requested.")
         return
     end
 
-    local chains_ok, missing_chains = validate_chain_files()
-    if not chains_ok then
-        msg("Required FX chain file(s) are missing:\n\n" .. table.concat(missing_chains, "\n"))
-        return
-    end
+    local _, missing_chains = validate_chain_files(groups)
 
     if settings.skip_conflicts then
-        local conflicts = has_name_conflicts(proj, items)
+        local conflicts = has_name_conflicts(proj, groups)
         if #conflicts > 0 then
             msg(
                 "These track names already exist, so nothing was created:\n\n"
@@ -644,25 +849,10 @@ local function create_requested_structure(codes_text, settings)
 
     local ok, err = pcall(function()
         local global_folder_track = create_global_folder(proj)
-        for _, item in ipairs(items) do
-            if item.kind == "section" then
-                local created, create_err = create_section(proj, item.value, settings.extra_fx)
-                if not created then
-                    error(create_err)
-                end
-            else
-                local color_entry = current_color_map and current_color_map[item.color_key]
-                local created, create_err = create_folder_pair(
-                    proj,
-                    item.value,
-                    item.chain_files,
-                    settings.extra_fx,
-                    nil,
-                    color_entry
-                )
-                if not created then
-                    error(create_err)
-                end
+        for _, group in ipairs(groups) do
+            local created, create_err = create_root_group(proj, group, settings.extra_fx)
+            if not created then
+                error(create_err)
             end
         end
         close_folder_on_last_created_track(proj, global_folder_track)
@@ -675,6 +865,12 @@ local function create_requested_structure(codes_text, settings)
 
     if ok then
         reaper.Undo_EndBlock("GPHIL - create stem track structure", -1)
+        if #missing_chains > 0 then
+            msg(
+                "Track structure was created, but these FX chain file(s) were missing and skipped:\n\n"
+                    .. table.concat(missing_chains, "\n")
+            )
+        end
     else
         reaper.Undo_EndBlock("GPHIL - create stem track structure failed", -1)
         msg(tostring(err))
@@ -719,7 +915,7 @@ local function show_stem_picker()
     local saved_codes = reaper.GetExtState(EXT_SECTION, "codes")
     local selected
     if trim(saved_codes):lower() == "all" then
-        selected = selected_codes_to_set("w b p s orch f")
+        selected = selected_codes_to_set("orch band")
     else
         selected = selected_codes_to_set(saved_codes)
     end
@@ -746,7 +942,7 @@ local function show_stem_picker()
     end
 
     local function selected_codes()
-        return selected_set_to_codes(remove_child_codes_when_section_selected(selected))
+        return selected_set_to_codes(remove_child_codes_when_parent_selected(selected))
     end
 
     local function loop()
@@ -784,14 +980,14 @@ local function show_stem_picker()
         local y = 134
         local row_h = 24
         for i, row in ipairs(rows) do
-            local parent_selected = row.section_code and selected[row.section_code]
+            local parent_selected = selected[row.root_code] or (row.section_code and selected[row.section_code])
             local row_y = y + (i - 1) * row_h
             local hover = gfx.mouse_x >= 16 and gfx.mouse_x <= gfx.w - 16 and gfx.mouse_y >= row_y and gfx.mouse_y <= row_y + row_h
 
             if hover then
                 gfx.set(0.16, 0.17, 0.21, 1)
                 gfx.rect(16, row_y, gfx.w - 32, row_h, 1)
-            elseif row.kind == "section" then
+            elseif row.kind == "root" or row.kind == "section" then
                 gfx.set(0.13, 0.14, 0.17, 1)
                 gfx.rect(16, row_y, gfx.w - 32, row_h, 1)
             end
@@ -799,7 +995,7 @@ local function show_stem_picker()
             draw_checkbox(24, row_y + 4, selected[row.code] or parent_selected, parent_selected)
             if parent_selected then
                 gfx.set(0.55, 0.57, 0.62, 1)
-            elseif row.kind == "section" then
+            elseif row.kind == "root" or row.kind == "section" then
                 gfx.set(0.95, 0.95, 0.98, 1)
             else
                 gfx.set(0.82, 0.84, 0.88, 1)
