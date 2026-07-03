@@ -18,8 +18,8 @@ local CMD_APPLY_GPHIL_STEMS  = "_RSa8c57e22cbf0ac88d95a5178ce4ede7f039e74a2"
 local CLICK_PATTERN_BASE     = "CLICKDATA/$project_$region_120"
 
 -- Base pattern for STEMS renders.
--- The trailing tempo placeholder before _$folders will be replaced.
-local STEMS_PATTERN_BASE     = "AUDIO/$region/STEMS/$project_$region_155_$folders"
+-- The trailing tempo placeholder before the final wildcard will be replaced.
+local STEMS_PATTERN_BASE     = "AUDIO/$region/STEMS/$project_$region_155_$trackname"
 
 local EXT_SECTION            = "GPHIL_STEMS_RENDER"
 local GLOBAL_STEMS_TRACK_NAME = "STEMS"
@@ -531,14 +531,14 @@ end
 local function stems_pattern_for_tempo(tempo_display)
     local tempo_str = tostring(tempo_display)
 
-    local prefix = STEMS_PATTERN_BASE:match("^(.*)_%d+_%$folders$")
-    if prefix then
-        return prefix .. "_" .. tempo_str .. "_$folders"
+    local prefix, wildcard = STEMS_PATTERN_BASE:match("^(.*)_%d+_($[%w_]+)$")
+    if prefix and wildcard then
+        return prefix .. "_" .. tempo_str .. "_" .. wildcard
     end
 
-    local folders_prefix = STEMS_PATTERN_BASE:match("^(.*)_%$folders$")
-    if folders_prefix then
-        return folders_prefix .. "_" .. tempo_str .. "_$folders"
+    local wildcard_prefix, trailing_wildcard = STEMS_PATTERN_BASE:match("^(.*)_($[%w_]+)$")
+    if wildcard_prefix and trailing_wildcard then
+        return wildcard_prefix .. "_" .. tempo_str .. "_" .. trailing_wildcard
     end
 
     return STEMS_PATTERN_BASE .. "_" .. tempo_str

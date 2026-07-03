@@ -32,12 +32,12 @@ local CMD_APPLY_GPHIL_STEMS = "_RSa8c57e22cbf0ac88d95a5178ce4ede7f039e74a2"
 
 local CLICK_PATTERN_BASE = "CLICKDATA/$project_$region_120"
 
--- Base pattern; the trailing tempo placeholder before _$folders will be replaced.
+-- Base pattern; the trailing tempo placeholder before the final wildcard will be replaced.
 -- Example:
---   AUDIO/$region/STEMS/$project_$region_155_$folders
+--   AUDIO/$region/STEMS/$project_$region_155_$trackname
 -- Produces:
---   AUDIO/$region/STEMS/$project_$region_<tempo>_$folders
-local STEMS_PATTERN_BASE = "AUDIO/$region/STEMS/$project_$region_155_$folders"
+--   AUDIO/$region/STEMS/$project_$region_<tempo>_$trackname
+local STEMS_PATTERN_BASE = "AUDIO/$region/STEMS/$project_$region_155_$trackname"
 
 local EXT_SECTION = "GPHIL_STEMS_RENDER"
 
@@ -248,16 +248,16 @@ end
 local function stems_pattern_for_tempo(tempo)
     local tempo_str = tostring(math.floor(tempo + 0.5))
 
-    -- If STEMS_PATTERN_BASE matches ..._(%d+)_$folders, replace that number.
-    local prefix, existing = STEMS_PATTERN_BASE:match("^(.*)_(%d+)_$folders$")
-    if prefix and existing then
-        return prefix .. "_" .. tempo_str .. "_$folders"
+    -- If STEMS_PATTERN_BASE matches ..._(%d+)_$wildcard, replace that number.
+    local prefix, existing, wildcard = STEMS_PATTERN_BASE:match("^(.*)_(%d+)_($[%w_]+)$")
+    if prefix and existing and wildcard then
+        return prefix .. "_" .. tempo_str .. "_" .. wildcard
     end
 
-    -- If pattern ends with _$folders but without a tempo marker, insert tempo before it.
-    local folders_prefix = STEMS_PATTERN_BASE:match("^(.*)_$folders$")
-    if folders_prefix then
-        return folders_prefix .. "_" .. tempo_str .. "_$folders"
+    -- If pattern ends with _$wildcard but without a tempo marker, insert tempo before it.
+    local wildcard_prefix, trailing_wildcard = STEMS_PATTERN_BASE:match("^(.*)_($[%w_]+)$")
+    if wildcard_prefix and trailing_wildcard then
+        return wildcard_prefix .. "_" .. tempo_str .. "_" .. trailing_wildcard
     end
 
     -- Fallback: append tempo.

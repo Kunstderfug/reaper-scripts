@@ -361,18 +361,20 @@ local function create_global_folder(proj)
     return track
 end
 
-local function create_stem_track(proj, stem, chain_files, extra_fx, color_entry)
+local function create_stem_track(proj, stem, chain_files, extra_fx, color_entry, load_fx)
     local stem_track = insert_track_at_end(proj, stem.name)
     reaper.SetMediaTrackInfo_Value(stem_track, "I_FOLDERDEPTH", 0)
     set_track_color(stem_track, color_entry and vary_color_entry(color_entry))
 
-    local chains_ok, chain_err = apply_chain_files(stem_track, chain_files)
-    if not chains_ok then
-        return false, chain_err
-    end
+    if load_fx ~= false then
+        local chains_ok, chain_err = apply_chain_files(stem_track, chain_files)
+        if not chains_ok then
+            return false, chain_err
+        end
 
-    if not add_fx_to_track(stem_track, extra_fx) then
-        return false, "Could not add FX/chain to stem track: " .. stem.name
+        if not add_fx_to_track(stem_track, extra_fx) then
+            return false, "Could not add FX/chain to stem track: " .. stem.name
+        end
     end
 
     return true
@@ -400,20 +402,22 @@ local function close_current_folder(proj)
     reaper.SetMediaTrackInfo_Value(last_track, "I_FOLDERDEPTH", depth - 1)
 end
 
-local function create_section(proj, section, extra_fx)
+local function create_section(proj, section, extra_fx, load_fx)
     local section_track = insert_track_at_end(proj, section.name)
     reaper.SetMediaTrackInfo_Value(section_track, "I_FOLDERDEPTH", 1)
 
     local section_color = current_color_map and current_color_map[section.code]
     set_track_color(section_track, section_color and section_color.color)
 
-    local chains_ok, chain_err = apply_chain_files(section_track, chain_files_for_code(section.code))
-    if not chains_ok then
-        return false, chain_err
-    end
+    if load_fx ~= false then
+        local chains_ok, chain_err = apply_chain_files(section_track, chain_files_for_code(section.code))
+        if not chains_ok then
+            return false, chain_err
+        end
 
-    if not add_fx_to_track(section_track, extra_fx) then
-        return false, "Could not add FX/chain to section folder track: " .. section.name
+        if not add_fx_to_track(section_track, extra_fx) then
+            return false, "Could not add FX/chain to section folder track: " .. section.name
+        end
     end
 
     for _, stem in ipairs(section.stems or {}) do
@@ -422,7 +426,8 @@ local function create_section(proj, section, extra_fx)
             stem,
             chain_files_for_code(section.code),
             extra_fx,
-            section_color
+            section_color,
+            load_fx
         )
         if not ok then
             return false, err
@@ -433,24 +438,26 @@ local function create_section(proj, section, extra_fx)
     return true
 end
 
-local function create_root_group(proj, group, extra_fx)
+local function create_root_group(proj, group, extra_fx, load_fx)
     local group_track = insert_track_at_end(proj, group.name)
     reaper.SetMediaTrackInfo_Value(group_track, "I_FOLDERDEPTH", 1)
 
     local group_color = current_color_map and current_color_map[group.code]
     set_track_color(group_track, group_color and group_color.color)
 
-    local chains_ok, chain_err = apply_chain_files(group_track, chain_files_for_code(group.code))
-    if not chains_ok then
-        return false, chain_err
-    end
+    if load_fx ~= false then
+        local chains_ok, chain_err = apply_chain_files(group_track, chain_files_for_code(group.code))
+        if not chains_ok then
+            return false, chain_err
+        end
 
-    if not add_fx_to_track(group_track, extra_fx) then
-        return false, "Could not add FX/chain to folder track: " .. group.name
+        if not add_fx_to_track(group_track, extra_fx) then
+            return false, "Could not add FX/chain to folder track: " .. group.name
+        end
     end
 
     for _, section in ipairs(group.sections or {}) do
-        local ok, err = create_section(proj, section, extra_fx)
+        local ok, err = create_section(proj, section, extra_fx, load_fx)
         if not ok then
             return false, err
         end
@@ -462,7 +469,8 @@ local function create_root_group(proj, group, extra_fx)
             stem,
             chain_files_for_code(group.code),
             extra_fx,
-            group_color
+            group_color,
+            load_fx
         )
         if not ok then
             return false, err
@@ -801,6 +809,7 @@ end
 local function get_saved_settings()
     local extra_fx = reaper.GetExtState(EXT_SECTION, "extra_fx")
     local skip_conflicts = reaper.GetExtState(EXT_SECTION, "skip_conflicts")
+    local load_fx = reaper.GetExtState(EXT_SECTION, "load_fx")
 
     if extra_fx == "" then
         extra_fx = DEFAULT_EXTRA_FX
@@ -808,10 +817,14 @@ local function get_saved_settings()
     if skip_conflicts == "" then
         skip_conflicts = "Y"
     end
+    if load_fx == "" then
+        load_fx = "Y"
+    end
 
     return {
         extra_fx = extra_fx,
         skip_conflicts = bool_from_text(skip_conflicts),
+        load_fx = bool_from_text(load_fx),
     }
 end
 
@@ -828,7 +841,11 @@ local function create_requested_structure(codes_text, settings)
         return
     end
 
-    local _, missing_chains = validate_chain_files(groups)
+    local missing_chains = {}
+    if settings.load_fx then
+        local chains_ok
+        chains_ok, missing_chains = validate_chain_files(groups)
+    end
 
     if settings.skip_conflicts then
         local conflicts = has_name_conflicts(proj, groups)
@@ -850,7 +867,7 @@ local function create_requested_structure(codes_text, settings)
     local ok, err = pcall(function()
         local global_folder_track = create_global_folder(proj)
         for _, group in ipairs(groups) do
-            local created, create_err = create_root_group(proj, group, settings.extra_fx)
+            local created, create_err = create_root_group(proj, group, settings.extra_fx, settings.load_fx)
             if not created then
                 error(create_err)
             end
@@ -923,7 +940,7 @@ local function show_stem_picker()
     local last_left_down = false
     local message = "Select stem buses to create."
 
-    gfx.init(SCRIPT_TITLE, 520, 760)
+    gfx.init(SCRIPT_TITLE, 520, 790)
     gfx.setfont(1, "Arial", 16)
 
     local function any_selected()
@@ -972,12 +989,25 @@ local function show_stem_picker()
         gfx.y = skip_y
         gfx.drawstr("Skip existing")
 
+        local load_fx_x = 398
+        local load_fx_y = 91
+        local load_fx_hover = gfx.mouse_x >= load_fx_x and gfx.mouse_x <= load_fx_x + 112 and gfx.mouse_y >= load_fx_y - 6 and gfx.mouse_y <= load_fx_y + 24
+        if load_fx_hover then
+            gfx.set(0.16, 0.17, 0.21, 1)
+            gfx.rect(load_fx_x - 8, load_fx_y - 6, 112, 28, 1)
+        end
+        draw_checkbox(load_fx_x, load_fx_y, settings.load_fx, false)
+        gfx.set(0.9, 0.9, 0.94, 1)
+        gfx.x = load_fx_x + 24
+        gfx.y = load_fx_y
+        gfx.drawstr("Load FX")
+
         gfx.set(0.75, 0.75, 0.78, 1)
         gfx.x = 16
-        gfx.y = 104
+        gfx.y = 124
         gfx.drawstr("Section rows create global buses. Child rows create individual stem buses.")
 
-        local y = 134
+        local y = 154
         local row_h = 24
         for i, row in ipairs(rows) do
             local parent_selected = selected[row.root_code] or (row.section_code and selected[row.section_code])
@@ -1048,6 +1078,10 @@ local function show_stem_picker()
                 settings.skip_conflicts = not settings.skip_conflicts
                 reaper.SetExtState(EXT_SECTION, "skip_conflicts", settings.skip_conflicts and "Y" or "N", true)
                 message = settings.skip_conflicts and "Existing track names will be skipped." or "Duplicate track names are allowed."
+            elseif load_fx_hover then
+                settings.load_fx = not settings.load_fx
+                reaper.SetExtState(EXT_SECTION, "load_fx", settings.load_fx and "Y" or "N", true)
+                message = settings.load_fx and "FX chains will be loaded." or "FX chain loading is disabled."
             else
                 for i, row in ipairs(rows) do
                     local row_y = y + (i - 1) * row_h
