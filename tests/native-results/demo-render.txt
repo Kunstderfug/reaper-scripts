@@ -1,0 +1,71 @@
+HOST 7.82/macOS-arm64
+ORIGINAL_MAP {markers={1={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="1",lineartempo="false",measurepos="0",timepos="0.0",timesig_denom="4",timesig_num="4"},2={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="11",lineartempo="false",measurepos="1",metronome_pattern="ABBBB",timepos="2.0",timesig_denom="4",timesig_num="5"},3={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="0",lineartempo="false",measurepos="2",timepos="4.5",timesig_denom="-1",timesig_num="-1"},4={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="3",timepos="7.833333333333",timesig_denom="4",timesig_num="3"},5={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="4",timepos="9.833333333333",timesig_denom="8",timesig_num="6"}},project_bpi="4.0",project_bpm="120.0",project_denom="4"}
+
+=== renderTempoSet - Render now with CLICK ===
+Original base tempo: 120 (REAPER: 120)
+Tempo multiplier: 1
+Render pattern base (regular): AUDIO/$region/$project_$region_160
+Click pattern base: CLICKDATA/$project_$region_120
+CLICKTRACK found: CLICKTRACK
+SOLO track not found (name exactly 'SOLO').
+Range (display): 100 to 120 step 20
+Range (REAPER quarter-note BPM): 100 to 120 step 20
+Render Click Files: YES
+Per-Region Settings Mode: YES
+Region Selection Scope: confirmed grid rows (2)
+Force Base Tempo At Region Starts: YES
+Region filter: <all regions>
+Matched region starts: 2
+--------------------------------------
+Enabled rows: 2 of 2
+Skipped rows: 0
+Regular: 4 render pass(es), 4 region render(s)
+Click: 2 render pass(es), 2 region render(s)
+Grouping avoids 0 separate render passes.
+Grouping rule: same base tempo + same target tempo.
+Existing-file skip: NO
+Planned click groups:
+  C1: R1 (1 region), base 120, target click
+  C2: R2 (1 region), base 90, target click
+Planned regular groups:
+  G1: R1 (1 region), base 120, target 100
+  G2: R1 (1 region), base 120, target 120
+  G3: R2 (1 region), base 90, target 80
+  G4: R2 (1 region), base 90, target 90
+START CLICK Region_A target=120
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/CLICKDATA/Tempo Set Demo_Region_A_120.ogg
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/CLICKDATA/Tempo Set Demo_Region_A_120.flac
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/demo-output/CLICKDATA/Tempo Set Demo_Region_A_120.ogg;LENGTH:0:04.500;PEAK:-12.041346;LUFSMMAX:-32.878678;LUFSSMAX:-39.019270;LUFSI:-38.777532;LRA:0.000000
+CLICK group 1 RENDERED: R1 (1 region), base 120 -> CLICKDATA/$project_$region_120
+START CLICK Region_B target=90
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/CLICKDATA/Tempo Set Demo_Region_B_90.ogg
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/CLICKDATA/Tempo Set Demo_Region_B_90.flac
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/demo-output/CLICKDATA/Tempo Set Demo_Region_B_90.ogg;LENGTH:0:04.000;PEAK:-12.041346;LUFSMMAX:-32.221559;LUFSSMAX:-37.391252;LUFSI:-36.963794;LRA:1.700000
+CLICK group 2 RENDERED: R2 (1 region), base 90 -> CLICKDATA/$project_$region_90
+START AUDIO Region_A target=100
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_A/Tempo Set Demo_Region_A_100.ogg
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_A/Tempo Set Demo_Region_A_100.flac
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_A/Tempo Set Demo_Region_A_100.ogg;LENGTH:0:05.400;PEAK:-11.971016;LUFSMMAX:-24.693489;LUFSSMAX:-26.601113;LUFSI:-26.711419;LRA:0.100000
+Render group 1 RENDERED: R1 (1 region), tempo 100 (base 120, factor 0.833333) -> AUDIO/$region/$project_$region_100
+START AUDIO Region_A target=120
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_A/Tempo Set Demo_Region_A_120.ogg
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_A/Tempo Set Demo_Region_A_120.flac
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_A/Tempo Set Demo_Region_A_120.ogg;LENGTH:0:04.500;PEAK:-14.373182;LUFSMMAX:-25.723733;LUFSSMAX:-26.783209;LUFSI:-26.833595;LRA:0.100000
+Render group 2 RENDERED: R1 (1 region), tempo 120 (base 120, factor 1.000000) -> AUDIO/$region/$project_$region_120
+START AUDIO Region_B target=80
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_B/Tempo Set Demo_Region_B_80.ogg
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_B/Tempo Set Demo_Region_B_80.flac
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_B/Tempo Set Demo_Region_B_80.ogg;LENGTH:0:04.500;PEAK:-12.997807;LUFSMMAX:-25.001714;LUFSSMAX:-28.021805;LUFSI:-27.262811;LRA:0.100000
+Render group 3 RENDERED: R2 (1 region), tempo 80 (base 90, factor 0.888889) -> AUDIO/$region/$project_$region_80
+START AUDIO Region_B target=90
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_B/Tempo Set Demo_Region_B_90.ogg
+TARGET /tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_B/Tempo Set Demo_Region_B_90.flac
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/demo-output/AUDIO/Region_B/Tempo Set Demo_Region_B_90.ogg;LENGTH:0:04.000;PEAK:-14.373182;LUFSMMAX:-25.725889;LUFSSMAX:-27.589367;LUFSI:-27.588002;LRA:1.000000
+Render group 4 RENDERED: R2 (1 region), tempo 90 (base 90, factor 1.000000) -> AUDIO/$region/$project_$region_90
+--------------------------------------
+Per-region Render now complete. Click entries: 2 (2 regions), regular entries: 4 (4 regions), skipped existing region outputs: 0.
+--------------------------------------
+Done. Render passes completed.
+Original tempo and meter map, render settings, track mutes, and selections restored.
+RESTORED_MAP {markers={1={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="1",lineartempo="false",measurepos="0",timepos="0.0",timesig_denom="4",timesig_num="4"},2={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="11",lineartempo="false",measurepos="1",metronome_pattern="ABBBB",timepos="2.0",timesig_denom="4",timesig_num="5"},3={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="0",lineartempo="false",measurepos="2",timepos="4.5",timesig_denom="-1",timesig_num="-1"},4={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="3",timepos="7.8333333333333",timesig_denom="4",timesig_num="3"},5={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="4",timepos="9.8333333333333",timesig_denom="8",timesig_num="6"}},project_bpi="4.0",project_bpm="120.0",project_denom="4"}
+PASS demo: six native passes, twelve non-silent Ogg/FLAC files; full map, regions, tracks, items and settings restored

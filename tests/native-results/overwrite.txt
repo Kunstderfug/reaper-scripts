@@ -1,0 +1,58 @@
+HOST 7.82/macOS-arm64
+ORIGINAL_MAP {markers={1={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="1",lineartempo="false",measurepos="0",timepos="0.0",timesig_denom="4",timesig_num="4"},2={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="11",lineartempo="false",measurepos="1",metronome_pattern="ABBBB",timepos="2.0",timesig_denom="4",timesig_num="5"},3={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="0",lineartempo="false",measurepos="2",timepos="4.5",timesig_denom="-1",timesig_num="-1"},4={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="3",timepos="7.8333333333333",timesig_denom="4",timesig_num="3"},5={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="4",timepos="9.8333333333333",timesig_denom="8",timesig_num="6"}},project_bpi="4.0",project_bpm="120.0",project_denom="4"}
+
+=== renderTempoSet - Render now with CLICK ===
+Original base tempo: 60 (REAPER: 60)
+Tempo multiplier: 1
+Render pattern base (regular): AUDIO/$region/$project_$region_160
+Click pattern base: CLICKDATA/$project_$region_120
+CLICKTRACK not found (name contains 'CLICKTRACK').
+SOLO track not found (name exactly 'SOLO').
+Range (display): 60 to 100 step 5
+Range (REAPER quarter-note BPM): 60 to 100 step 5
+Render Click Files: YES
+Per-Region Settings Mode: YES
+Region Selection Scope: confirmed grid rows (2)
+Force Base Tempo At Region Starts: YES
+Region filter: <all regions>
+Matched region starts: 2
+--------------------------------------
+Enabled rows: 2 of 2
+Skipped rows: 0
+Regular: 4 render pass(es), 4 region render(s)
+Click: 0 render pass(es), 0 region render(s)
+Grouping avoids 0 separate render passes.
+Grouping rule: same base tempo + same target tempo.
+Existing-file skip: NO
+Planned regular groups:
+  G1: R1 (1 region), base 120, target 100
+  G2: R1 (1 region), base 120, target 120
+  G3: R2 (1 region), base 90, target 80
+  G4: R2 (1 region), base 90, target 90
+Render group 1: 1 likely existing output(s) found; included in plan.
+  existing: /tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_A/fixture_Region_A_100.flac
+START Region_A base=120 target=100
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_A/fixture_Region_A_100.ogg;LENGTH:0:05.400;PEAK:-11.457158;LUFSMMAX:-15.916239;LUFSSMAX:-15.934835;LUFSI:-16.070611;LRA:0.000000
+Render group 1 RENDERED: R1 (1 region), tempo 100 (base 120, factor 0.833333) -> AUDIO/$region/$project_$region_100
+Render group 2: 1 likely existing output(s) found; included in plan.
+  existing: /tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_A/fixture_Region_A_120.flac
+START Region_A base=120 target=120
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_A/fixture_Region_A_120.ogg;LENGTH:0:04.500;PEAK:-10.871193;LUFSMMAX:-15.856207;LUFSSMAX:-15.926969;LUFSI:-16.092718;LRA:0.000000
+Render group 2 RENDERED: R1 (1 region), tempo 120 (base 120, factor 1.000000) -> AUDIO/$region/$project_$region_120
+Render group 3: 1 likely existing output(s) found; included in plan.
+  existing: /tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_B/fixture_Region_B_80.flac
+START Region_B base=90 target=80
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_B/fixture_Region_B_80.ogg;LENGTH:0:02.250;PEAK:-10.724192;LUFSMMAX:-15.933674;LUFSSMAX:-17.196893;LUFSI:-16.280433
+Render group 3 RENDERED: R2 (1 region), tempo 80 (base 90, factor 0.888889) -> AUDIO/$region/$project_$region_80
+Render group 4: 1 likely existing output(s) found; included in plan.
+  existing: /tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_B/fixture_Region_B_90.flac
+START Region_B base=90 target=90
+STATS FILE:/tmp/gphil-native-multiregion-53076fae/output/AUDIO/Region_B/fixture_Region_B_90.ogg;LENGTH:0:02.000;PEAK:-10.467251;LUFSMMAX:-15.857601;LUFSSMAX:-17.683023;LUFSI:-16.297890
+Render group 4 RENDERED: R2 (1 region), tempo 90 (base 90, factor 1.000000) -> AUDIO/$region/$project_$region_90
+--------------------------------------
+Per-region Render now complete. Click entries: 0 (0 regions), regular entries: 4 (4 regions), skipped existing region outputs: 0.
+--------------------------------------
+Done. Render passes completed.
+Original tempo and meter map, render settings, track mutes, and selections restored.
+RESTORED_MAP {markers={1={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="1",lineartempo="false",measurepos="0",timepos="0.0",timesig_denom="4",timesig_num="4"},2={beat_basis="1.0",beatpos="1e-11",bpm="120.0",flags="11",lineartempo="false",measurepos="1",metronome_pattern="ABBBB",timepos="2.0",timesig_denom="4",timesig_num="5"},3={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="0",lineartempo="false",measurepos="2",timepos="4.5",timesig_denom="-1",timesig_num="-1"},4={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="3",timepos="7.8333333333333",timesig_denom="4",timesig_num="3"},5={beat_basis="1.0",beatpos="1e-11",bpm="90.0",flags="3",lineartempo="false",measurepos="4",timepos="9.8333333333333",timesig_denom="8",timesig_num="6"}},project_bpi="4.0",project_bpm="120.0",project_denom="4"}
+PASS overwrite: outputs, live tempos, complete map, region bounds, render settings and track state
