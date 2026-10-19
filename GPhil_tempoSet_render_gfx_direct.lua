@@ -1,5 +1,5 @@
 -- renderTempoSet_queue_with_click_gfx_direct.lua
--- Batch queue with immediate GFX region grid (no initial GetUserInputs dialog)
+-- Queue or render sequentially with an immediate GFX region grid
 
 ---@diagnostic disable-next-line: undefined-global
 local reaper                              = reaper
@@ -31,8 +31,6 @@ local PENDING_QUEUE_OPTIONS_KEY           = "pending_queue_options_v1"
 local SAVED_REGION_ROWS_KEY               = "saved_region_rows_v1"
 local main
 
-local TEMPO_MARKER_FLAG_METRONOME_PATTERN = 8
-local TEMPO_MARKER_FLAGS                  = { 1, 2, 4, 8, 16 }
 
 local RENDER_NUMERIC_KEYS                 = {
     "RENDER_SETTINGS",
@@ -220,13 +218,15 @@ end
 local function serialize_queue_options(options)
     options = options or {}
     return table.concat({
-        "skip_existing=" .. (options.skip_existing and "1" or "0")
+        "skip_existing=" .. (options.skip_existing and "1" or "0"),
+        "mode=" .. (options.mode == "render_now" and "render_now" or "queue")
     }, "\n")
 end
 
 local function deserialize_queue_options(blob)
     local options = {
-        skip_existing = false
+        skip_existing = false,
+        mode = "queue"
     }
 
     if not blob or blob == "" then
@@ -237,6 +237,8 @@ local function deserialize_queue_options(blob)
         local key, value = line:match("^([^=]+)=(.*)$")
         if key == "skip_existing" then
             options.skip_existing = value == "1"
+        elseif key == "mode" then
+            options.mode = value == "render_now" and "render_now" or "queue"
         end
     end
 
@@ -326,223 +328,30 @@ local function save_last_params(
     )
 end
 
-local function flag_is_set(flags, flag)
-    if not flags then
-        return false
+local tempo_map_module
+local function tempo_map_api()
+    if not tempo_map_module then
+        local source = debug.getinfo(1, "S").source
+        local directory = source:sub(1, 1) == "@" and source:sub(2):match("^(.*[/\\])") or ""
+        tempo_map_module = dofile((directory or "") .. "lib/tempo_map.lua").new(reaper)
     end
-    return math.floor(flags / flag) % 2 == 1
-end
-
-local function get_tempo_marker_flags(proj, marker_index)
-    if not reaper.GetSetTempoTimeSigMarkerFlag then
-        return nil
-    end
-    return reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, 0, false)
-end
-
-local function set_tempo_marker_flags(proj, marker_index, flags)
-    if not flags or not reaper.GetSetTempoTimeSigMarkerFlag then
-        return
-    end
-
-    for i = 1, #TEMPO_MARKER_FLAGS do
-        local flag = TEMPO_MARKER_FLAGS[i]
-        reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, flag, flag_is_set(flags, flag))
-    end
-end
-
-local function get_metronome_pattern(proj, timepos)
-    if not reaper.TimeMap_GetMetronomePattern then
-        return nil
-    end
-
-    local _, pattern = reaper.TimeMap_GetMetronomePattern(proj, timepos, "EXTENDED")
-    if pattern and pattern ~= "" then
-        return pattern
-    end
-    return nil
-end
-
-local function set_metronome_pattern(proj, timepos, pattern)
-    if not pattern or pattern == "" or not reaper.TimeMap_GetMetronomePattern then
-        return
-    end
-    reaper.TimeMap_GetMetronomePattern(proj, timepos, "SET:" .. pattern)
-end
-
-local function find_tempo_marker_at_time(proj, timepos)
-    local eps = 0.0000005
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = 0, cnt - 1 do
-        local retval, marker_timepos = reaper.GetTempoTimeSigMarker(proj, i)
-        if retval and math.abs(marker_timepos - timepos) <= eps then
-            return i
-        end
-    end
-    return nil
+    return tempo_map_module
 end
 
 local function commit_tempo_map_changes(proj)
-    if reaper.UpdateTimeline then
-        reaper.UpdateTimeline()
-    end
-    if reaper.UpdateArrange then
-        reaper.UpdateArrange()
-    end
-end
-
-local function apply_tempo_marker_metadata(proj, marker_index, timepos, flags, metronome_pattern)
-    if flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN) then
-        set_metronome_pattern(proj, timepos, metronome_pattern)
-    end
-    set_tempo_marker_flags(proj, marker_index, flags)
-end
-
-local function tempo_map_stats(markers)
-    local time_signature_count = 0
-    for i = 1, #(markers or {}) do
-        local m = markers[i]
-        if m.timesig_num and m.timesig_num > 0 and m.timesig_denom and m.timesig_denom > 0 then
-            time_signature_count = time_signature_count + 1
-        end
-    end
-    return #(markers or {}), time_signature_count
+    tempo_map_api().commit()
 end
 
 local function capture_tempo_map(proj)
-    local state = {
-        project_bpm = nil,
-        project_bpi = nil,
-        markers = {}
-    }
-
-    if reaper.GetProjectTimeSignature2 then
-        state.project_bpm, state.project_bpi = reaper.GetProjectTimeSignature2(proj)
-    elseif reaper.GetProjectTimeSignature then
-        state.project_bpm, state.project_bpi = reaper.GetProjectTimeSignature()
-    end
-
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = 0, cnt - 1 do
-        local retval, timepos, measurepos, beatpos, bpm, timesig_num, timesig_denom,
-        lineartempo, unk = reaper.GetTempoTimeSigMarker(proj, i)
-        if retval then
-            local flags = get_tempo_marker_flags(proj, i)
-            state.markers[#state.markers + 1] = {
-                timepos = timepos,
-                measurepos = measurepos,
-                beatpos = beatpos,
-                bpm = bpm,
-                timesig_num = timesig_num,
-                timesig_denom = timesig_denom,
-                lineartempo = lineartempo,
-                unk = unk,
-                flags = flags,
-                metronome_pattern = flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN)
-                    and get_metronome_pattern(proj, timepos)
-                    or nil
-            }
-        end
-    end
-    return state
-end
-
-local function tempo_markers_from_state(state)
-    if state and state.markers then
-        return state.markers
-    end
-    return state or {}
+    return tempo_map_api().capture(proj)
 end
 
 local function restore_tempo_map(proj, state)
-    local markers = tempo_markers_from_state(state)
-
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = cnt - 1, 0, -1 do
-        reaper.DeleteTempoTimeSigMarker(proj, i)
-    end
-
-    for i = 1, #markers do
-        local m = markers[i]
-        reaper.SetTempoTimeSigMarker(
-            proj, -1,
-            m.timepos,
-            m.measurepos,
-            m.beatpos,
-            m.bpm,
-            m.timesig_num,
-            m.timesig_denom,
-            m.lineartempo
-        )
-    end
-
-    for i = 1, #markers do
-        local m = markers[i]
-        local marker_index = find_tempo_marker_at_time(proj, m.timepos)
-        if marker_index then
-            apply_tempo_marker_metadata(proj, marker_index, m.timepos, m.flags, m.metronome_pattern)
-        end
-    end
-
-    commit_tempo_map_changes(proj)
-
-    local restored_markers = capture_tempo_map(proj).markers
-    local captured_count, captured_timesig_count = tempo_map_stats(markers)
-    local restored_count, restored_timesig_count = tempo_map_stats(restored_markers)
-    if captured_count > 0 and (restored_count < captured_count or restored_timesig_count < captured_timesig_count) then
-        log(string.format(
-            "WARNING: restored %d/%d tempo/time-signature markers and %d/%d explicit time signatures.",
-            restored_count,
-            captured_count,
-            restored_timesig_count,
-            captured_timesig_count
-        ))
-    end
+    return tempo_map_api().restore(proj, state)
 end
 
-local function scale_tempo_map(proj, tempo_state_original, factor)
-    if not factor or factor == 0 then
-        return
-    end
-
-    local markers_original = tempo_markers_from_state(tempo_state_original)
-
-    -- To mimic "Adjust entire tempo envelope" we not only scale BPM,
-    -- but also move tempo markers in time by the inverse factor so that
-    -- musical (beat) positions are preserved and the project stretches.
-    local time_scale = 1.0 / factor
-
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = cnt - 1, 0, -1 do
-        reaper.DeleteTempoTimeSigMarker(proj, i)
-    end
-
-    for i = 1, #markers_original do
-        local m = markers_original[i]
-        local new_bpm = m.bpm * factor
-        local new_timepos = m.timepos * time_scale
-        reaper.SetTempoTimeSigMarker(
-            proj, -1,
-            new_timepos,
-            m.measurepos,
-            m.beatpos,
-            new_bpm,
-            m.timesig_num,
-            m.timesig_denom,
-            m.lineartempo
-        )
-    end
-
-    for i = 1, #markers_original do
-        local m = markers_original[i]
-        local new_timepos = m.timepos * time_scale
-        local marker_index = find_tempo_marker_at_time(proj, new_timepos)
-        if marker_index then
-            apply_tempo_marker_metadata(proj, marker_index, new_timepos, m.flags, m.metronome_pattern)
-        end
-    end
-
-    commit_tempo_map_changes(proj)
+local function scale_tempo_map(proj, state, factor)
+    return tempo_map_api().scale(proj, state, factor)
 end
 
 -- Replace last "_<number>" with tempo_str; if none, append.
@@ -668,55 +477,8 @@ local function collect_region_start_positions(proj, region_name_filter)
     return starts
 end
 
-local function ensure_tempo_marker_at_time(proj, timepos, bpm)
-    local eps = 0.0000005
-    local cnt = reaper.CountTempoTimeSigMarkers(proj)
-    for i = 0, cnt - 1 do
-        local retval, marker_timepos, measurepos, beatpos, marker_bpm, timesig_num, timesig_denom, lineartempo =
-            reaper.GetTempoTimeSigMarker(proj, i)
-
-        if retval and math.abs(marker_timepos - timepos) <= eps then
-            local keep_bpm = marker_bpm
-            if bpm and bpm > 0 then
-                keep_bpm = bpm
-            end
-            local flags = get_tempo_marker_flags(proj, i)
-            local metronome_pattern = flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN)
-                and get_metronome_pattern(proj, marker_timepos)
-                or nil
-
-            reaper.SetTempoTimeSigMarker(
-                proj,
-                i,
-                marker_timepos,
-                measurepos,
-                beatpos,
-                keep_bpm,
-                timesig_num,
-                timesig_denom,
-                lineartempo
-            )
-            apply_tempo_marker_metadata(proj, i, marker_timepos, flags, metronome_pattern)
-            commit_tempo_map_changes(proj)
-            return true
-        end
-    end
-
-    local ok = reaper.SetTempoTimeSigMarker(
-        proj,
-        -1,
-        timepos,
-        -1,
-        -1,
-        bpm,
-        0,
-        0,
-        false
-    )
-    if ok then
-        commit_tempo_map_changes(proj)
-    end
-    return ok
+local function ensure_tempo_marker_at_time(proj, timepos, bpm, explicit_override)
+    return tempo_map_api().ensure(proj, timepos, bpm, explicit_override)
 end
 
 local function enforce_region_start_base_tempo(proj, region_starts, base_bpm)
@@ -726,7 +488,7 @@ local function enforce_region_start_base_tempo(proj, region_starts, base_bpm)
 
     local applied = 0
     for i = 1, #region_starts do
-        if ensure_tempo_marker_at_time(proj, region_starts[i].pos, base_bpm) then
+        if ensure_tempo_marker_at_time(proj, region_starts[i].pos, base_bpm, true) then
             applied = applied + 1
         end
     end
@@ -938,16 +700,16 @@ local function build_queue_summary(rows, tempo_multiplier)
         string.format("Enabled rows: %d of %d", enabled_count, #rows),
         string.format("Skipped rows: %d", skipped_count),
         string.format(
-            "Regular: %d queue project(s), %d region render(s)",
+            "Regular: %d render pass(es), %d region render(s)",
             #regular_groups,
             regular_region_count
         ),
         string.format(
-            "Click: %d queue project(s), %d region render(s)",
+            "Click: %d render pass(es), %d region render(s)",
             #click_groups,
             click_region_count
         ),
-        string.format("Grouping avoids %d separate queue entr%s.", saved_entries, saved_entries == 1 and "y" or "ies"),
+        string.format("Grouping avoids %d separate render pass%s.", saved_entries, saved_entries == 1 and "" or "es"),
         "Grouping rule: same base tempo + same target tempo."
     }
 
@@ -964,7 +726,7 @@ end
 
 local function log_queue_plan(rows, tempo_multiplier, title)
     local plan = build_queue_summary(rows, tempo_multiplier)
-    log(title or "Queue plan")
+    log(title or "Render plan")
     log(plan.summary_text)
     if #plan.click_groups > 0 then
         log("Click groups:")
@@ -1214,7 +976,8 @@ local function prompt_per_region_settings(
         set_message("Sorted rows by On, Base, Min, Max, Step.")
     end
 
-    local function confirm_queue_options()
+    local function confirm_queue_options(mode)
+        local action_label = mode == "render_now" and "Render now" or "Queue"
         local ok, err = validate_enabled_rows()
         if not ok then
             set_message(err)
@@ -1224,26 +987,27 @@ local function prompt_per_region_settings(
         local plan = build_queue_summary(rows, tempo_multiplier)
         local preview_response = reaper.ShowMessageBox(
             plan.summary_text .. "\n\nPress OK to continue to existing-file handling.",
-            "Queue Preview",
+            action_label .. " Preview",
             1
         )
         if preview_response ~= 1 then
-            set_message("Queue cancelled.")
+            set_message(action_label .. " cancelled.")
             return nil
         end
 
         local existing_response = reaper.ShowMessageBox(
-            "Existing-file handling:\n\nYes = queue all planned groups\nNo = skip likely existing output files\nCancel = abort",
+            "Existing-file handling:\n\nYes = overwrite all planned output files\nNo = skip likely existing output files\nCancel = abort",
             "Existing Files",
             3
         )
         if existing_response == 2 then
-            set_message("Queue cancelled.")
+            set_message(action_label .. " cancelled.")
             return nil
         end
 
         return {
-            skip_existing = existing_response == 7
+            skip_existing = existing_response == 7,
+            mode = mode
         }
     end
 
@@ -1255,9 +1019,9 @@ local function prompt_per_region_settings(
         end
 
         reaper.ShowConsoleMsg("")
-        local plan = log_queue_plan(rows, tempo_multiplier, "=== DRY RUN: optimized GFX queue plan ===")
-        reaper.ShowMessageBox(plan.summary_text, "Dry Run Queue Plan", 0)
-        set_message("Dry run written to console; no queue entries added.")
+        local plan = log_queue_plan(rows, tempo_multiplier, "=== DRY RUN: optimized GFX render plan ===")
+        reaper.ShowMessageBox(plan.summary_text, "Dry Run Render Plan", 0)
+        set_message("Dry run written to console; no renders started.")
     end
 
     local function copy_last_to_row(row_idx)
@@ -1420,12 +1184,13 @@ local function prompt_per_region_settings(
         local top_y = 12
         local btn_h = 32
         local bx = 16
-        local queue_hover = draw_button(bx, top_y, 110, btn_h, "Queue")
-        local dry_run_hover = draw_button(bx + 122, top_y, 110, btn_h, "Dry Run")
-        local sort_hover = draw_button(bx + 244, top_y, 140, btn_h, "Sort For Queue")
-        local cancel_hover = draw_button(bx + 396, top_y, 110, btn_h, "Cancel")
-        local save_hover = draw_button(bx + 518, top_y, 80, btn_h, "Save")
-        local load_hover = draw_button(bx + 610, top_y, 80, btn_h, "Load")
+        local queue_hover = draw_button(bx, top_y, 90, btn_h, "Queue")
+        local render_now_hover = draw_button(bx + 102, top_y, 120, btn_h, "Render now")
+        local dry_run_hover = draw_button(bx + 234, top_y, 90, btn_h, "Dry Run")
+        local sort_hover = draw_button(bx + 336, top_y, 120, btn_h, "Sort Groups")
+        local cancel_hover = draw_button(bx + 468, top_y, 90, btn_h, "Cancel")
+        local save_hover = draw_button(bx + 570, top_y, 70, btn_h, "Save")
+        local load_hover = draw_button(bx + 652, top_y, 70, btn_h, "Load")
 
         local row2_y = top_y + 42
         local copy_hover = draw_button(bx, row2_y, 220, btn_h, "Copy Last To Selected")
@@ -1549,8 +1314,8 @@ local function prompt_per_region_settings(
             local mx = gfx.mouse_x
             local my = gfx.mouse_y
 
-            if queue_hover then
-                local options = confirm_queue_options()
+            if queue_hover or render_now_hover then
+                local options = confirm_queue_options(render_now_hover and "render_now" or "queue")
                 if options then
                     gfx.quit()
                     queue_pending_rows_and_continue(proj, rows, options)
@@ -1640,7 +1405,7 @@ local function prompt_per_region_settings(
         reaper.defer(ui_loop)
     end
 
-    -- Start modelessly; Queue will stash rows and defer a fresh main() pass.
+    -- Start modelessly; either action stashes rows and defers a fresh main() pass.
     reaper.defer(function()
         ui_loop()
     end)
@@ -1860,7 +1625,7 @@ local function log_existing_output_result(label, existing, unchecked, skip_exist
             "%s: %d likely existing output(s)%s.",
             label,
             #existing,
-            skip_existing and " skipped" or " found; queueing anyway"
+            skip_existing and " skipped" or " found; included in plan"
         ))
         local limit = math.min(#existing, 8)
         for i = 1, limit do
@@ -1914,7 +1679,8 @@ local function delete_existing_outputs(label, existing, skip_existing)
 end
 
 main = function()
-    local proj = 0
+    local proj = reaper.EnumProjects(-1, "")
+    if not proj then return end
 
     if not ADD_TO_QUEUE_CMD or ADD_TO_QUEUE_CMD <= 0 then
         reaper.ShowMessageBox(
@@ -1984,14 +1750,15 @@ main = function()
     local region_selection_scope = "all regions"
     local pending_rows = nil
     local queue_options = {
-        skip_existing = false
+        skip_existing = false,
+        mode = "queue"
     }
     do
         local has_pending, pending_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY)
         if has_pending == 1 and pending_blob and pending_blob ~= "" then
             pending_rows = deserialize_region_rows(pending_blob)
             reaper.SetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY, "")
-            region_selection_scope = string.format("queued grid rows (%d)", #pending_rows)
+            region_selection_scope = string.format("confirmed grid rows (%d)", #pending_rows)
         end
 
         local has_options, options_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_QUEUE_OPTIONS_KEY)
@@ -2042,56 +1809,98 @@ main = function()
         end
     end
 
-    reaper.Undo_BeginBlock()
+    local render_now = queue_options.mode == "render_now"
+    local action_label = render_now and "Render now" or "Queue"
+    local completed_label = render_now and "RENDERED" or "QUEUED"
+    local source = debug.getinfo(1, "S").source
+    local directory = source:sub(1, 1) == "@" and source:sub(2):match("^(.*[/\\])") or ""
+    local render_pass
+    local markers_original, original_render_state, original_region_selection
+    local capture_ok, capture_error = pcall(function()
+        if render_now then
+            render_pass = dofile((directory or "") .. "lib/render_pass.lua")
+            local supported, reason = render_pass.preflight(reaper)
+            if not supported then error(reason, 0) end
+        end
+        markers_original = capture_tempo_map(proj)
+        original_render_state = capture_render_state(proj)
+        original_region_selection = capture_region_selection(proj)
+    end)
+    if not capture_ok then
+        reaper.ShowMessageBox("Nothing was rendered or queued.\n\n" .. tostring(capture_error), "Tempo Set", 0)
+        return
+    end
 
-    local markers_original = capture_tempo_map(proj)
     local region_starts = {}
     if force_region_base then
         region_starts = collect_region_start_positions(proj, region_name_filter)
     end
-    local original_render_state = capture_render_state(proj)
-    local original_region_selection = capture_region_selection(proj)
-
-    local original_click_mute = nil
-    if click_track then
-        original_click_mute = reaper.GetMediaTrackInfo_Value(click_track, "B_MUTE")
-    end
-
-    local original_solo_mute = nil
-    if solo_track then
-        original_solo_mute = reaper.GetMediaTrackInfo_Value(solo_track, "B_MUTE")
-        reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", 1)
-    end
-
-    -- Save original track selection
+    local original_click_mute = click_track and reaper.GetMediaTrackInfo_Value(click_track, "B_MUTE")
+    local original_solo_mute = solo_track and reaper.GetMediaTrackInfo_Value(solo_track, "B_MUTE")
     local prev_sel = {}
-    local track_count = reaper.CountTracks(proj)
-    for i = 0, track_count - 1 do
+    for i = 0, reaper.CountTracks(proj) - 1 do
         local tr = reaper.GetTrack(proj, i)
-        if reaper.IsTrackSelected(tr) then
-            prev_sel[#prev_sel + 1] = tr
-        end
+        if reaper.IsTrackSelected(tr) then prev_sel[#prev_sel + 1] = tr end
     end
 
-    local function restore_original_state()
-        restore_tempo_map(proj, markers_original)
-        restore_render_state(proj, original_render_state)
-        restore_region_selection(proj, original_region_selection)
-
-        if click_track and original_click_mute ~= nil then
+    local cleanup = dofile((directory or "") .. "lib/render_session.lua").new()
+    cleanup.add("tempo and meter map", function() restore_tempo_map(proj, markers_original) end)
+    cleanup.add("render settings", function() restore_render_state(proj, original_render_state) end)
+    cleanup.add("region selection", function() restore_region_selection(proj, original_region_selection) end)
+    cleanup.add("track mutes", function()
+        if click_track and original_click_mute ~= nil and reaper.ValidatePtr2(proj, click_track, "MediaTrack*") then
             reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
         end
-
-        if solo_track and original_solo_mute ~= nil and reaper.ValidatePtr2(0, solo_track, "MediaTrack*") then
+        if solo_track and original_solo_mute ~= nil and reaper.ValidatePtr2(proj, solo_track, "MediaTrack*") then
             reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", original_solo_mute)
         end
-
-        reaper.Main_OnCommand(40297, 0)
-        for i = 1, #prev_sel do
-            reaper.SetTrackSelected(prev_sel[i], true)
+    end)
+    cleanup.add("track selection", function()
+        for i = 0, reaper.CountTracks(proj) - 1 do
+            reaper.SetTrackSelected(reaper.GetTrack(proj, i), false)
         end
+        for _, tr in ipairs(prev_sel) do
+            if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then reaper.SetTrackSelected(tr, true) end
+        end
+    end)
+    local undo_open = false
+    cleanup.add("undo block", function()
+        if undo_open then
+            undo_open = false
+            reaper.Undo_EndBlock2(proj, "renderTempoSet - " .. action_label, -1)
+        end
+    end)
+    cleanup.add("arrange refresh", function() reaper.UpdateArrange() end)
+    local function report_cleanup_errors(errors)
+        if #errors > 0 then
+            reaper.ShowMessageBox("Some original state could not be restored:\n\n" .. table.concat(errors, "\n"), "Tempo Set restoration error", 0)
+        end
+    end
+    reaper.atexit(function() report_cleanup_errors(cleanup.finish()) end)
 
-        reaper.UpdateArrange()
+    local render_stop_reason
+    local function require_original_project()
+        if reaper.EnumProjects(-1, "") ~= proj then error("The active project changed; rendering stopped.", 0) end
+    end
+    local function submit_render_pass()
+        require_original_project()
+        if render_now then
+            local complete, reason = render_pass.run(reaper, proj, {
+                overwrite = not queue_options.skip_existing,
+                remove_file = os.remove
+            })
+            if not complete then
+                render_stop_reason = reason or "Rendering stopped."
+                error(render_stop_reason, 0)
+            end
+        else
+            reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+        end
+        require_original_project()
+    end
+    local function prepare_existing_outputs(label, existing, skip_existing)
+        if render_now then return true end -- Exact native targets are handled immediately before each pass.
+        return delete_existing_outputs(label, existing, skip_existing)
     end
 
     local function format_traceback(err)
@@ -2102,8 +1911,11 @@ main = function()
     end
 
     local ok, err = xpcall(function()
+        reaper.Undo_BeginBlock2(proj)
+        undo_open = true
+        if solo_track then reaper.SetMediaTrackInfo_Value(solo_track, "B_MUTE", 1) end
         reaper.ShowConsoleMsg("")
-        log("=== renderTempoSet - queue with CLICK ===")
+        log("=== renderTempoSet - " .. action_label .. " with CLICK ===")
         log(string.format("Original base tempo: %g (REAPER: %g)", base_tempo, base_tempo_actual))
         log(string.format("Tempo multiplier: %g", tempo_multiplier))
         log(string.format("Render pattern base (regular): %s", RENDER_PATTERN_BASE))
@@ -2116,7 +1928,7 @@ main = function()
         end
         if solo_track then
             local _, name = reaper.GetTrackName(solo_track, "")
-            log("SOLO track muted for queued renders: " .. (name or "<unnamed>"))
+            log("SOLO track muted for renders: " .. (name or "<unnamed>"))
         else
             log("SOLO track not found (name exactly 'SOLO').")
         end
@@ -2175,12 +1987,13 @@ main = function()
                     log("SKIP CLICK: GPHIL_CLICK preset action not configured.")
                 else
                     for group_index = 1, #click_groups do
+                        require_original_project()
                         local group = click_groups[group_index]
 
                         restore_tempo_map(proj, markers_original)
                         for region_index = 1, #group.regions do
                             local cfg = group.regions[region_index]
-                            ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
+                            ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier, true)
                         end
 
                         select_only_track(click_track)
@@ -2209,7 +2022,7 @@ main = function()
                             if #active_regions == 0 then
                                 log(string.format("CLICK group %d SKIP: all likely outputs already exist.", group_index))
                             else
-                                local delete_ok = delete_existing_outputs(
+                                local delete_ok = prepare_existing_outputs(
                                     string.format("CLICK group %d", group_index),
                                     existing,
                                     queue_options.skip_existing
@@ -2224,12 +2037,12 @@ main = function()
                                     select_only_track(click_track)
                                     reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
                                     commit_tempo_map_changes(proj)
-                                    reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                                    submit_render_pass()
                                     reaper.UpdateArrange()
                                     queued_click_count = queued_click_count + 1
                                     queued_click_region_count = queued_click_region_count + #active_regions
                                     log(string.format(
-                                        "CLICK group %d QUEUED: %s (%s), base %g -> %s",
+                                        "CLICK group %d " .. completed_label .. ": %s (%s), base %g -> %s",
                                         group_index,
                                         region_rows_label(active_regions),
                                         region_count_label(#active_regions),
@@ -2260,12 +2073,13 @@ main = function()
                 log("GPHIL_RENDER preset action not configured. Skipping regular renders.")
             else
                 for group_index = 1, #regular_groups do
+                    require_original_project()
                     local group = regular_groups[group_index]
 
                     restore_tempo_map(proj, markers_original)
                     for region_index = 1, #group.regions do
                         local cfg = group.regions[region_index]
-                        ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier)
+                        ensure_tempo_marker_at_time(proj, cfg.pos, cfg.base_tempo * tempo_multiplier, true)
                     end
 
                     local markers_for_scale = capture_tempo_map(proj)
@@ -2273,7 +2087,10 @@ main = function()
 
                     for region_index = 1, #group.regions do
                         local cfg = group.regions[region_index]
-                        ensure_tempo_marker_at_time(proj, cfg.pos, group.target_actual)
+                        local region = reaper.GetRegionOrMarker(proj, cfg.internal_index, "")
+                        if not region then error("A requested region no longer exists.", 0) end
+                        local live_start = reaper.GetRegionOrMarkerInfo_Value(proj, region, "D_STARTPOS")
+                        ensure_tempo_marker_at_time(proj, live_start, group.target_actual, true)
                     end
 
                     if click_track and original_click_mute ~= nil then
@@ -2306,7 +2123,7 @@ main = function()
                     if #active_regions == 0 then
                         log(string.format("Render group %d SKIP: all likely outputs already exist.", group_index))
                     else
-                        local delete_ok = delete_existing_outputs(
+                        local delete_ok = prepare_existing_outputs(
                             string.format("Render group %d", group_index),
                             existing,
                             queue_options.skip_existing
@@ -2320,12 +2137,12 @@ main = function()
                             select_regions(proj, active_regions)
                             reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
                             commit_tempo_map_changes(proj)
-                            reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                            submit_render_pass()
                             reaper.UpdateArrange()
                             queued_regular_count = queued_regular_count + 1
                             queued_regular_region_count = queued_regular_region_count + #active_regions
                             log(string.format(
-                                "Render group %d QUEUED: %s (%s), tempo %g (base %g, factor %.6f) -> %s",
+                                "Render group %d " .. completed_label .. ": %s (%s), tempo %g (base %g, factor %.6f) -> %s",
                                 group_index,
                                 region_rows_label(active_regions),
                                 region_count_label(#active_regions),
@@ -2341,7 +2158,7 @@ main = function()
 
             log("--------------------------------------")
             log(string.format(
-                "Per-region queue %s. Click entries: %d (%d regions), regular entries: %d (%d regions), skipped existing region outputs: %d.",
+                "Per-region " .. action_label .. " %s. Click entries: %d (%d regions), regular entries: %d (%d regions), skipped existing region outputs: %d.",
                 stopped_early and "stopped early" or "complete",
                 queued_click_count,
                 queued_click_region_count,
@@ -2378,10 +2195,10 @@ main = function()
 
                         select_only_track(click_track)
                         commit_tempo_map_changes(proj)
-                        reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                        submit_render_pass()
                         reaper.UpdateArrange()
                         log(string.format(
-                            "CLICK QUEUED: tempo = %g (REAPER: %g) -> pattern: %s",
+                            "CLICK " .. completed_label .. ": tempo = %g (REAPER: %g) -> pattern: %s",
                             base_tempo,
                             base_tempo_actual,
                             click_pattern
@@ -2411,6 +2228,7 @@ main = function()
                 local iteration = 1
 
                 while (step > 0 and tempo <= end_tempo) or (step < 0 and tempo >= end_tempo) do
+                    require_original_project()
                     local target_tempo = tempo
                     local target_tempo_actual = target_tempo * tempo_multiplier
                     local factor = target_tempo_actual / base_tempo_actual
@@ -2421,10 +2239,8 @@ main = function()
                     end
 
                     local markers_for_scale = capture_tempo_map(proj)
+                    -- Pre-scale start overrides already move and scale with the map.
                     scale_tempo_map(proj, markers_for_scale, factor)
-                    if force_region_base and #region_starts > 0 then
-                        enforce_region_start_base_tempo(proj, region_starts, target_tempo_actual)
-                    end
 
                     if click_track and original_click_mute ~= nil then
                         reaper.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
@@ -2441,11 +2257,11 @@ main = function()
                     set_render_pattern(proj, new_pattern)
 
                     commit_tempo_map_changes(proj)
-                    reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+                    submit_render_pass()
                     reaper.UpdateArrange()
 
                     log(string.format(
-                        "#%d QUEUED: target tempo = %g (REAPER: %g, factor %.6f) -> pattern: %s",
+                        "#%d " .. completed_label .. ": target tempo = %g (REAPER: %g, factor %.6f) -> pattern: %s",
                         iteration,
                         target_tempo,
                         target_tempo_actual,
@@ -2460,23 +2276,26 @@ main = function()
         end
     end, format_traceback)
 
-    restore_original_state()
-    reaper.Undo_EndBlock("renderTempoSet - queue with CLICK", -1)
-
+    local cleanup_errors = cleanup.finish()
+    report_cleanup_errors(cleanup_errors)
+    local restored = #cleanup_errors == 0
     if not ok then
         log("--------------------------------------")
-        log("ERROR: " .. tostring(err))
+        log((render_stop_reason and "STOPPED: " or "ERROR: ") .. tostring(err))
         reaper.ShowMessageBox(
-            "renderTempoSet stopped after an error. Original project state was restored.\n\n" .. tostring(err),
-            "Error",
+            "Tempo Set stopped. " .. (restored and "Original project state was restored." or "See the restoration error for details.")
+                .. "\n\n" .. tostring(render_stop_reason or err),
+            "Tempo Set",
             0
         )
         return
     end
 
     log("--------------------------------------")
-    log("Done. Queue entries added.")
-    log("Original tempo map, render settings, CLICKTRACK/SOLO mute, selection, and region selection restored.")
+    log(render_now and "Done. Render passes completed." or "Done. Queue entries added.")
+    if restored then
+        log("Original tempo and meter map, render settings, track mutes, and selections restored.")
+    end
 end
 
 main()
