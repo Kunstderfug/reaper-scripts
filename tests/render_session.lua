@@ -1,0 +1,10 @@
+local session = dofile('lib/render_session.lua').new()
+local calls = {}
+session.add('map', function() calls[#calls + 1] = 'map'; error('write failure') end)
+session.add('settings', function() calls[#calls + 1] = 'settings' end)
+session.add('undo', function() calls[#calls + 1] = 'undo' end)
+local errors = session.finish()
+assert(#errors == 1 and errors[1]:find('map:', 1, true))
+assert(table.concat(calls, ',') == 'map,settings,undo', 'cleanup must continue after failure')
+assert(#session.finish() == 0 and #calls == 3, 'atexit must not restore a second time')
+print('PASS: independent, idempotent cleanup after restoration failure')
