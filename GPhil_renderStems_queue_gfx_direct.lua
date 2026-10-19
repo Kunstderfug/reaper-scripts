@@ -32,7 +32,6 @@ local SAVED_REGION_ROWS_KEY = "saved_region_rows_v1"
 local main
 
 local TEMPO_MARKER_FLAG_METRONOME_PATTERN = 8
-local TEMPO_MARKER_FLAGS = { 1, 2, 4, 8, 16 }
 
 local RENDER_NUMERIC_KEYS = {
     "RENDER_SETTINGS",
@@ -378,10 +377,8 @@ local function set_tempo_marker_flags(proj, marker_index, flags)
         return
     end
 
-    for i = 1, #TEMPO_MARKER_FLAGS do
-        local flag = TEMPO_MARKER_FLAGS[i]
-        reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, flag, flag_is_set(flags, flag))
-    end
+    -- is_set selects write/query; flag is the complete bitmask, not one bit.
+    reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, flags, true)
 end
 
 local function get_metronome_pattern(proj, timepos)

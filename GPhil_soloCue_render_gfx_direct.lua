@@ -278,6 +278,57 @@ local function save_last_params(
     )
     reaper.SetProjExtState(proj, EXT_SECTION, "region_name_filter", region_name_filter or "")
 end
+local TEMPO_MARKER_FLAG_METRONOME_PATTERN = 8
+
+local function flag_is_set(flags, flag)
+    if not flags then
+        return false
+    end
+    return math.floor(flags / flag) % 2 == 1
+end
+
+local function get_tempo_marker_flags(proj, marker_index)
+    if not reaper.GetSetTempoTimeSigMarkerFlag then
+        return nil
+    end
+    return reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, 0, false)
+end
+
+local function set_tempo_marker_flags(proj, marker_index, flags)
+    if not flags or not reaper.GetSetTempoTimeSigMarkerFlag then
+        return
+    end
+
+    -- is_set selects write/query; flag is the complete bitmask, not one bit.
+    reaper.GetSetTempoTimeSigMarkerFlag(proj, marker_index, flags, true)
+end
+
+local function get_metronome_pattern(proj, timepos)
+    if not reaper.TimeMap_GetMetronomePattern then
+        return nil
+    end
+
+    local _, pattern = reaper.TimeMap_GetMetronomePattern(proj, timepos, "EXTENDED")
+    if pattern and pattern ~= "" then
+        return pattern
+    end
+    return nil
+end
+
+local function set_metronome_pattern(proj, timepos, pattern)
+    if not pattern or pattern == "" or not reaper.TimeMap_GetMetronomePattern then
+        return
+    end
+    reaper.TimeMap_GetMetronomePattern(proj, timepos, "SET:" .. pattern)
+end
+
+local function apply_tempo_marker_metadata(proj, marker_index, timepos, flags, metronome_pattern)
+    if flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN) then
+        set_metronome_pattern(proj, timepos, metronome_pattern)
+    end
+    set_tempo_marker_flags(proj, marker_index, flags)
+end
+
 local function commit_tempo_map_changes(proj)
     if reaper.UpdateTimeline then
         reaper.UpdateTimeline()
@@ -316,6 +367,7 @@ local function capture_tempo_map(proj)
         local retval, timepos, measurepos, beatpos, bpm, timesig_num, timesig_denom,
         lineartempo, unk = reaper.GetTempoTimeSigMarker(proj, i)
         if retval then
+            local flags = get_tempo_marker_flags(proj, i)
             state.markers[#state.markers + 1] = {
                 timepos = timepos,
                 measurepos = measurepos,
@@ -324,7 +376,11 @@ local function capture_tempo_map(proj)
                 timesig_num = timesig_num,
                 timesig_denom = timesig_denom,
                 lineartempo = lineartempo,
-                unk = unk
+                unk = unk,
+                flags = flags,
+                metronome_pattern = flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN)
+                    and get_metronome_pattern(proj, timepos)
+                    or nil
             }
         end
     end
@@ -358,6 +414,7 @@ local function restore_tempo_map(proj, state)
             m.timesig_denom,
             m.lineartempo
         )
+        apply_tempo_marker_metadata(proj, i - 1, m.timepos, m.flags, m.metronome_pattern)
     end
 
     commit_tempo_map_changes(proj)
@@ -444,6 +501,10 @@ local function ensure_tempo_marker_at_time(proj, timepos, bpm)
             if bpm and bpm > 0 then
                 keep_bpm = bpm
             end
+            local flags = get_tempo_marker_flags(proj, i)
+            local metronome_pattern = flag_is_set(flags, TEMPO_MARKER_FLAG_METRONOME_PATTERN)
+                and get_metronome_pattern(proj, marker_timepos)
+                or nil
             reaper.SetTempoTimeSigMarker(
                 proj,
                 i,
@@ -455,6 +516,7 @@ local function ensure_tempo_marker_at_time(proj, timepos, bpm)
                 timesig_denom,
                 lineartempo
             )
+            apply_tempo_marker_metadata(proj, i, marker_timepos, flags, metronome_pattern)
             commit_tempo_map_changes(proj)
             return true
         end
