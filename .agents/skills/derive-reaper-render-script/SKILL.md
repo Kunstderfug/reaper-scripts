@@ -1,11 +1,11 @@
 ---
 name: derive-reaper-render-script
-description: How to create a new GPhil_* REAPER render-queue script by deriving it from an existing one in this repo. Use whenever the user asks to make, create, or build a new render script "like" or "based on" an existing GPhil_*.lua script — e.g. "make a script like soloCue but for violin", "another script based on tempoSet that renders only drums", or any request that swaps the target track, preset, or render pattern while reusing the proven queue/grid/isolation machinery.
+description: Derive a new GPhil_* REAPER queue or direct-render script from an existing script when changing the target track, preset, output pattern, or render mode. Preserve tempo/meter metadata and project state.
 ---
 
 # Derive a REAPER Render Script
 
-This skill creates new `GPhil_*.lua` render-queue scripts by **deriving** them from existing ones in `/Volumes/DRIVE/DEV/reaper-scripts/`. It does NOT write render scripts from scratch — the proven helpers (tempo-map capture/restore, region collection, GFX grid, queue grouping) are too valuable to reinvent, and the isolation mechanism is subtle enough that getting it wrong produces silently-broken renders.
+This skill creates new `GPhil_*.lua` queue or direct-render scripts by **deriving** them from existing ones in `/Volumes/DEV/reaper-scripts/`. Retain the source's region collection, GFX grid, and grouping structure, then audit tempo handling and isolation against the chosen mode.
 
 ## When to use
 
@@ -18,11 +18,11 @@ If the user instead wants to *fix* or *modify* an existing script in place, don'
 
 ## The core method: copy, then edit
 
-**Always start by copying the source script byte-for-byte, then edit in place.** Never rewrite from a blank file. This preserves 2000+ lines of tested helpers that you will not get right from memory.
+**Always start by copying the source script byte-for-byte, then edit in place.** Never rewrite from a blank file. This preserves the source structure; audit the inherited tempo handling before relying on it. A copied helper can carry a bug into the new script.
 
 ```bash
-cp /Volumes/DRIVE/DEV/reaper-scripts/<SOURCE>.lua \
-   /Volumes/DRIVE/DEV/reaper-scripts/<NEW>.lua
+cp /Volumes/DEV/reaper-scripts/<SOURCE>.lua \
+   /Volumes/DEV/reaper-scripts/<NEW>.lua
 diff -q <SOURCE>.lua <NEW>.lua && echo IDENTICAL   # must print IDENTICAL
 ```
 
@@ -35,11 +35,22 @@ Derive the filename by swapping the target token in the source name. The convent
 | `GPhil_soloCue_render_gfx_direct.lua` | BASS | `GPhil_bassCue_render_gfx_direct.lua` |
 | `GPhil_soloCue_render_gfx_direct.lua` | LEAD VOCAL | `GPhil_leadVocalCue_render_gfx_direct.lua` (camelCase the token, strip spaces) |
 
-If the user already named the file, use their name. If neither, ask.
+If the user already named the file, use their name. Give direct-render and queue variants distinct filenames and ExtState sections; include the mode when the target token would otherwise collide.
 
-## Default source: `GPhil_soloCue_render_gfx_direct.lua`
+## Choose the render mode before copying
 
-This is the simplest script in the family and the best starting point. It does one render per region at the region's auto-detected base tempo, isolating a single named track. If the user wants tempo-stepping or multiple render flows (click + full-mix), derive from `GPhil_tempoSet_render_gfx_direct.lua` instead — but expect a much larger diff.
+Use the user's named source when supplied. Otherwise choose the closest behavior:
+
+| Requested behavior | Source |
+|---|---|
+| Quick region render at the original project tempo map | `GPhil_defaultTempo_render_gfx_direct.lua` |
+| Quick click-only region render at the original map | `GPhil_click_render_gfx_direct.lua` |
+| Single-target queue at each region's detected base tempo | `GPhil_soloCue_render_gfx_direct.lua` |
+| Tempo-stepping queue or click + full-mix flows | `GPhil_tempoSet_render_gfx_direct.lua` |
+
+Inspect the action used by the source: filename suffix `_direct` does not identify the execution mode. The quick scripts use synchronous action `42230`; queue creation uses `41823`.
+
+**Tempo-map contract:** original-map renders leave the map untouched, including cleanup. Do not inherit deletion/reinsertion or region-start tempo insertion into that mode. Any mode that temporarily changes the map must preserve the complete original map through success, cancellation, termination, and failure. Before inheriting, adding, or changing any marker capture, restore, scaling, or region-start adjustment, read [tempo-map preservation](references/tempo-map-preservation.md) and apply its regression checks. Marker counts and BPM values alone do not establish preservation.
 
 ## The four things that change per derivation
 
@@ -102,11 +113,9 @@ The fastest reliable way is a whole-file rename pass after the value edits, not 
 
 ## Isolation: the part that silently breaks
 
-This is the single most important lesson in this skill. Read it carefully.
+Match isolation to the preset's render source. Solo state by itself does not establish selected-track isolation; use the selected-track preset contract below and verify the resulting audio.
 
-**`B_SOLO` does not constrain what a render produces.** Solo is a *monitoring* state — it affects playback, not rendering. A script that sets `B_SOLO=2` on a track and then renders will render every track, not just the soloed one. The render will look fine; the output will be wrong; `luac -p` will pass; there is no error. This exact bug happened during the soloCue derivation and required a user test to catch.
-
-The proven isolation pattern (used by every working script in this repo) is **track selection + mute management**:
+For a selected-track preset, use **track selection + mute management**:
 
 ```lua
 local function select_only_track(track)
@@ -136,23 +145,23 @@ for i = 1, #prev_sel do
 end
 ```
 
-Why this works: the render preset is configured (in REAPER) to render **selected tracks** within region bounds (`RENDER_BOUNDSFLAG=5`). So "select only the target track" = "render only the target track". The force-unmute is defensive — if the target was muted when the script ran, the render would otherwise come out silent.
+Why this works: the render preset is configured (in REAPER) to render **selected tracks**, and the script sets region bounds (`RENDER_BOUNDSFLAG=5`). So "select only the target track" = "render only the target track". The force-unmute is defensive — if the target was muted when the script ran, the render would otherwise come out silent.
 
-**The preset configuration is part of the contract.** Before writing a derivation that isolates a track, confirm with the user that the named preset is bound to render selected tracks. If the preset is bound to master mix or source media instead, track selection won't isolate and you need a different approach (out of scope — ask the user).
+**The preset configuration is part of the contract.** Establish that the named preset renders selected tracks before implementing track isolation. Use existing session confirmation or inspect the preset configuration; ask only if that contract remains unknown. A preset rendering the master mix or source media needs a different isolation approach. `RENDER_BOUNDSFLAG=5` selects region bounds; it does not select the render source.
 
-**This confirmation blocks the work — do not proceed without it.** Do not write isolation code (even inherited-from-source isolation) on the assumption that "it worked for SOLO so it'll work here." The source's isolation is correct *because* the SOLO_CUE preset happens to be bound to selected tracks; a different preset with different bounds makes the identical code wrong. If the user can't confirm the preset's bounds yet, stop and ask — do not ship a derivation that might silently render the wrong thing. (This is exactly the bug that required a user test to catch during soloCue: the code looked right, `luac -p` passed, and the output was wrong.)
+### State to capture and restore
 
-### State to capture and restore (always)
+Capture before the first mutation, wrap rendering/queueing in `xpcall`, and restore after it on both success and error:
 
-Wrap the whole queue in `Undo_BeginBlock`/`Undo_EndBlock` and an `xpcall`. Capture up front, restore in a function called both on success and error:
+- Complete tempo map **only for modes that modify it**, following the linked preservation reference.
+- Render settings (`capture_render_state` / `restore_render_state`).
+- Region selection (`capture_region_selection` / `restore_region_selection`).
+- Track selection (`prev_sel`, restored via `40297` + reselect).
+- Every track mute state changed by the script (including an additionally muted SOLO track).
 
-- Tempo map (`capture_tempo_map` / `restore_tempo_map`)
-- Render settings (`capture_render_state` / `restore_render_state`)
-- Region selection (`capture_region_selection` / `restore_region_selection`)
-- Track selection (`prev_sel` list, restored via `40297` + reselect)
-- Target track's `B_MUTE` (shown above)
+For sequential direct rendering, register idempotent `reaper.atexit` cleanup before mutation and call the same cleanup after the protected body. Advance only after the current render is confirmed complete; cancellation stops the entire sequence. See the preservation reference for the completion contract.
 
-Restore must run **after** the `xpcall`, not inside it, so it fires on error too.
+Keep cleanup outside the protected render body. A failing cleanup step must still allow the remaining state restorations and `Undo_EndBlock` to run, and report any restoration failure. Original-map mode must make no tempo-map writes even on the error path.
 
 ## Process lessons (these matter as much as the code)
 
@@ -181,16 +190,18 @@ Safer: use the Edit tool with the full old function body as the match string (it
 After every edit to a `GPhil_*.lua` script, per `AGENTS.md`:
 
 ```bash
-cp /Volumes/DRIVE/DEV/reaper-scripts/<NEW>.lua \
+cp /Volumes/DEV/reaper-scripts/<NEW>.lua \
    "/Users/slav/Library/Application Support/REAPER/Scripts/GPhil/<NEW>.lua"
 diff -q <repo>/<NEW>.lua "<deploy>/<NEW>.lua" && echo IDENTICAL
 ```
 
-The deployed copy is what REAPER actually runs. An edited repo file that isn't deployed has no effect.
+Deploy runtime helper files too, retaining their relative paths, and byte-compare every copied file. The deployed copy is what REAPER actually runs. An edited repo file that isn't deployed has no effect.
 
-### The user is the only verifier
+### Verify behavior as well as syntax
 
-REAPER scripts cannot be exercised headless. `luac -p` + structural grep catch construction errors, but **render correctness can only be confirmed by the user running the script in REAPER** and listening to the output. Never claim a render-script change is verified based on static checks alone. Say "compiles, deployed, ready for you to test in REAPER" — not "verified".
+Use Lua API mocks to exercise the actual derived helpers and main render path. For scripts that modify tempo, run the regression cases in the preservation reference; for original-map mode, make every tempo writer fail in the mock so an unintended edit is caught. Include success and an injected render/queue failure, then compare restored state. Existing entry points are `lua tests/tempo_marker_flags.lua` and `lua tests/click_direct_render.lua`; extend coverage for the new script rather than reporting only the source's tests.
+
+Mocks establish script logic, not REAPER's actual queue snapshots or rendered audio. A live check must compare tempo/meter marker values and checkboxes before/after queue creation, inspect queued project snapshots, and listen to the isolated output. Report which automated checks passed and whether the live check was performed; do not claim host behavior was verified from syntax checks or mocks.
 
 ## Reference: how the queue loop fits together
 
@@ -204,31 +215,34 @@ main()
           on Queue: stash rows to ProjExtState, defer fresh main()
   [Queue pass]
     Undo_BeginBlock
-    capture: tempo map, render state, region selection, prev_sel, target B_MUTE
+    capture: complete tempo map if modified, render state, region selection, prev_sel, changed mute states
     for each group (regions sharing base tempo):
-      restore tempo map; ensure base-tempo marker at each region start
+      if changing tempo: restore complete map; apply intentional tempo changes
+      otherwise: leave tempo map untouched
       select_only_track(target); force-unmute target
       restore render state; apply preset
       set pattern (with tempo suffix); filter existing outputs
-      select regions; RENDER_BOUNDSFLAG=5; ADD_TO_QUEUE_CMD
+      select regions; RENDER_BOUNDSFLAG=5; queue (41823) or render (42230)
       restore target mute; restore prev_sel
-    restore_original_state()   (always, after xpcall)
+    restore_original_state()   (after xpcall; attempt every restoration)
     Undo_EndBlock
 ```
 
 The GFX grid (`prompt_per_region_settings`) is a `gfx.*` defer loop. When slimming it, keep these columns/buttons; drop the rest:
-- **Keep:** On, Grp, Region, Base columns; Queue, Dry Run, Sort For Queue, Cancel, Save, Load, Copy Last To Selected buttons.
+- **Keep:** On, Grp, Region, Base columns; Queue or Render (matching the chosen mode), Dry Run, Sort, Cancel, Save, Load, Copy Last To Selected buttons. Preserve automatically detected Base during cross-row copying and Save/Load.
 - **Drop:** Min/Max/Step/Click columns and Fill Down / Copy To All buttons — these only exist in the tempo-stepping source.
 
 ## Quick checklist for a derivation
 
 - [ ] Copy source → new file, verify `IDENTICAL`, `luac -p` passes
-- [ ] **Confirm with user: preset is bound to render selected tracks** (blocks — do not proceed without it)
+- [ ] Establish selected-track preset contract from session confirmation, preset inspection, or user clarification
 - [ ] Swap preset id, pattern, target track name, `EXT_SECTION` (unique!)
 - [ ] Rename the target identifier family (`find_<target>_track`, `<target>_track`, `original_<target>_mute`, etc.) + user-visible strings (Undo label, logs)
 - [ ] Isolation uses `select_only_track` + force-unmute, NOT `B_SOLO`
-- [ ] All five state captures present and restored after xpcall
+- [ ] Original-map mode makes no tempo writes; modifying mode meets the linked preservation contract
+- [ ] Changed state is captured before mutation; every cleanup is attempted after success/error
+- [ ] Actual derived script passes tempo/meter and render/queue failure regressions
 - [ ] After any deletion: structural grep confirms every called function is still defined
 - [ ] `luac -p` passes
 - [ ] Deployed copy is byte-identical (`diff -q` → `IDENTICAL`)
-- [ ] Tell user it's ready to test in REAPER — do not claim verified
+- [ ] Report automated results and live REAPER verification status separately
