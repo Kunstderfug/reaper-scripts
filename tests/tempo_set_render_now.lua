@@ -63,6 +63,10 @@ local function run_case(options)
         pending_queue_options_v1 = options.legacy_queue and "skip_existing=0" or "skip_existing=0\nmode=render_now",
         render_click = "N"
     }
+    if options.pause_audio_check == false then
+        ext.pending_queue_options_v1 = ext.pending_queue_options_v1 .. "\npause_audio_check=0"
+        ext.pause_audio_check_v1 = "0"
+    end
     if options.grid then
         ext.pending_region_rows_v1, ext.pending_queue_options_v1 = nil, nil
     end
@@ -74,6 +78,7 @@ local function run_case(options)
     end
     local original_numeric, original_strings = clone(numeric), clone(strings)
     local passes, messages, logs, exit_callbacks = {}, {}, {}, {}
+    local checkpoints, awaiting_review = {}, false
     local outputs = {}
     if options.preexisting then
         for tempo = 100, 120, 10 do
@@ -98,6 +103,7 @@ local function run_case(options)
         return strings.RENDER_FILE .. "/" .. strings.RENDER_PATTERN:gsub("%$project", "Suite"):gsub("%$region", "Section") .. ".wav"
     end
     local function render_pass(command)
+        assert(not awaiting_review, "next native pass cannot start before audio review returns")
         if command == 41823 then queue_calls = queue_calls + 1 else render_calls = render_calls + 1 end
         equal(numeric.RENDER_BOUNDSFLAG, 5, "selected-region bounds")
         assert(regions[1].B_UISEL == 1 and regions[2].B_UISEL == 0, "only requested section is selected")
@@ -116,6 +122,9 @@ local function run_case(options)
             else
                 render_stats = "FILE:" .. target_path() .. ";PEAK:-1.0;RMS:-5.0;CLIP:0;"
                 if options.tab_switch then active_project = other_project end
+                if not strings.RENDER_PATTERN:find("CLICKDATA/", 1, true) and options.pause_audio_check ~= false then
+                    awaiting_review = true
+                end
             end
         end
     end
@@ -250,7 +259,23 @@ local function run_case(options)
         atexit = function(callback) exit_callbacks[#exit_callbacks + 1] = callback end,
         UpdateArrange = function() end,
         ShowConsoleMsg = function(message) logs[#logs + 1] = message end,
-        ShowMessageBox = function(message) messages[#messages + 1] = message; return 1 end,
+        ShowMessageBox = function(message, title, buttons)
+            if title == "Tempo Set: audio check required" then
+                assert(awaiting_review, "checkpoint follows a successful native music pass")
+                equal(buttons, 4, "checkpoint uses Yes/No")
+                assert(message:find(strings.RENDER_PATTERN, 1, true), "checkpoint identifies output pattern")
+                assert(message:find(strings.RENDER_FILE, 1, true), "checkpoint identifies output directory")
+                assert(message:find("Music group", 1, true), "checkpoint identifies music pass")
+                assert(logs[#logs]:find("RENDER_TARGETS\t" .. target_path(), 1, true),
+                    "checkpoint logs exact current-pass output scope before prompting")
+                checkpoints[#checkpoints + 1] = render_calls
+                awaiting_review = false
+                if options.checkpoint_tab_switch then active_project = other_project end
+                return options.checkpoint_stop == #checkpoints and 7 or 6
+            end
+            messages[#messages + 1] = message
+            return 1
+        end,
         defer = function(callback)
             assert(options.grid, "confirmed rows should not open the grid")
             deferred[#deferred + 1] = callback
@@ -303,7 +328,7 @@ local function run_case(options)
     end
     for _, callback in ipairs(exit_callbacks) do callback() end
     equal(removed_outputs, options.preexisting and 3 or 0, "exact existing output removal")
-    assert(active_project == (options.tab_switch and other_project or project), "cleanup preserves user active tab")
+    assert(active_project == ((options.tab_switch or options.checkpoint_tab_switch) and other_project or project), "cleanup preserves user active tab")
     equal(points, original_points, "original tempo/meter metadata")
     equal(project_bpm, 120, "original project BPM")
     equal(project_bpi, 5, "original project meter")
@@ -320,11 +345,23 @@ local function run_case(options)
     else
         equal(ext.pending_region_rows_v1, "", "consumed pending rows")
     end
-    local expected_passes = (preflight_failure or grid_cancel) and 0 or (options.render_error or options.terminate or options.tab_switch) and 1 or options.cancel and 2 or options.click and 4 or options.grid and 9 or 3
+    local expected_passes = (preflight_failure or grid_cancel) and 0 or (options.render_error or options.terminate or options.tab_switch or options.checkpoint_tab_switch) and 1 or options.checkpoint_stop and (options.checkpoint_stop + (options.click and 1 or 0)) or options.cancel and 2 or options.click and 4 or options.grid and 9 or 3
     equal(#passes, expected_passes, "render pass count")
     local uses_queue = options.legacy_queue or options.grid == "queue"
     equal(queue_calls, uses_queue and expected_passes or 0, "queue calls")
     equal(render_calls, uses_queue and 0 or expected_passes, "direct render calls")
+    local expected_checkpoints = 0
+    if not uses_queue and options.pause_audio_check ~= false and not preflight_failure and not grid_cancel then
+        expected_checkpoints = expected_passes - (options.click and 1 or 0)
+        if options.render_error or options.terminate or options.tab_switch or options.cancel then
+            expected_checkpoints = expected_checkpoints - 1
+        end
+    end
+    equal(#checkpoints, expected_checkpoints, "successful music pass checkpoints including final pass")
+    if options.grid and not grid_cancel then
+        assert(dispatched_options:find("pause_audio_check=" .. (options.pause_audio_check == false and "0" or "1"), 1, true),
+            "grid dispatches project audio-check option")
+    end
     for i, pass in ipairs(passes) do
         local is_click = options.click and i == 1
         local regular_index = options.click and i - 1 or i
@@ -368,10 +405,13 @@ local function run_case(options)
         local diagnostic = table.concat(messages, "\n") .. "\n" .. table.concat(logs, "\n")
         assert(diagnostic:find(options.unsupported and "6.68" or "GetSetTempoTimeSigMarkerFlag", 1, true),
             "preflight failure surfaced")
-    elseif options.render_error or options.terminate or options.tab_switch then
+    elseif options.render_error or options.terminate or options.tab_switch or options.checkpoint_tab_switch then
         local diagnostic = table.concat(messages, "\n") .. "\n" .. table.concat(logs, "\n")
-        assert(diagnostic:find(options.tab_switch and "active project changed" or options.terminate and "terminated during render" or "injected render failure", 1, true),
+        assert(diagnostic:find((options.tab_switch or options.checkpoint_tab_switch) and "active project changed" or options.terminate and "terminated during render" or "injected render failure", 1, true),
             "original error surfaced")
+    elseif options.checkpoint_stop then
+        local diagnostic = table.concat(messages, "\n") .. "\n" .. table.concat(logs, "\n")
+        assert(diagnostic:find("Stopped at the audio quality checkpoint", 1, true), "checkpoint stop reported")
     elseif options.cancel then
         local diagnostic = table.concat(messages, "\n") .. "\n" .. table.concat(logs, "\n")
         assert(diagnostic:lower():find("cancel", 1, true), "cancellation reported")
@@ -393,7 +433,13 @@ run_case({ render_error = true })
 run_case({ cancel = true })
 run_case({ terminate = true })
 run_case({ tab_switch = true })
+run_case({ pause_audio_check = false })
+run_case({ checkpoint_stop = 1 })
+run_case({ checkpoint_stop = 2, click = true })
+run_case({ checkpoint_stop = 3 }) -- Final pass must be reviewed before completion.
+run_case({ checkpoint_tab_switch = true })
+run_case({ grid = "render_now", pause_audio_check = false })
 run_case({ grid = "render_now" })
 run_case({ grid = "queue" })
 run_case({ grid = "cancel" })
-print("PASS: Tempo Set direct renders, legacy queue, effective tempos at meter-only start, full original-state restoration")
+print("PASS: Tempo Set direct renders, legacy queue, effective tempos at meter-only start, full original-state restoration, per-music-pass audio checkpoints")

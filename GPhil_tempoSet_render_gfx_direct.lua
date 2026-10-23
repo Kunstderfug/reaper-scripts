@@ -29,6 +29,7 @@ local GROUP_KEY_SCALE                     = 1000000
 local PENDING_REGION_ROWS_KEY             = "pending_region_rows_v1"
 local PENDING_QUEUE_OPTIONS_KEY           = "pending_queue_options_v1"
 local SAVED_REGION_ROWS_KEY               = "saved_region_rows_v1"
+local AUDIO_CHECK_OPTION_KEY              = "pause_audio_check_v1"
 local main
 
 
@@ -219,14 +220,16 @@ local function serialize_queue_options(options)
     options = options or {}
     return table.concat({
         "skip_existing=" .. (options.skip_existing and "1" or "0"),
-        "mode=" .. (options.mode == "render_now" and "render_now" or "queue")
+        "mode=" .. (options.mode == "render_now" and "render_now" or "queue"),
+        "pause_audio_check=" .. (options.pause_audio_check == false and "0" or "1")
     }, "\n")
 end
 
 local function deserialize_queue_options(blob)
     local options = {
         skip_existing = false,
-        mode = "queue"
+        mode = "queue",
+        pause_audio_check = true
     }
 
     if not blob or blob == "" then
@@ -237,6 +240,8 @@ local function deserialize_queue_options(blob)
         local key, value = line:match("^([^=]+)=(.*)$")
         if key == "skip_existing" then
             options.skip_existing = value == "1"
+        elseif key == "pause_audio_check" then
+            options.pause_audio_check = value ~= "0"
         elseif key == "mode" then
             options.mode = value == "render_now" and "render_now" or "queue"
         end
@@ -828,6 +833,8 @@ local function prompt_per_region_settings(
     tempo_multiplier,
     default_click
 )
+    local _, saved_audio_check = reaper.GetProjExtState(proj, EXT_SECTION, AUDIO_CHECK_OPTION_KEY)
+    local pause_audio_check = saved_audio_check ~= "0"
     local rows = {}
     for i = 1, #regions do
         local region = regions[i]
@@ -1007,7 +1014,8 @@ local function prompt_per_region_settings(
 
         return {
             skip_existing = existing_response == 7,
-            mode = mode
+            mode = mode,
+            pause_audio_check = pause_audio_check
         }
     end
 
@@ -1196,6 +1204,8 @@ local function prompt_per_region_settings(
         local copy_hover = draw_button(bx, row2_y, 220, btn_h, "Copy Last To Selected")
         local fill_hover = draw_button(bx + 232, row2_y, 220, btn_h, "Fill Down From Selected")
         local copy_all_hover = draw_button(bx + 464, row2_y, 140, btn_h, "Copy To All")
+        local audio_check_hover = draw_button(bx + 616, row2_y, 340, btn_h,
+            (pause_audio_check and "[x] " or "[ ] ") .. "Pause for audio check (Render now)")
 
         gfx.set(1, 1, 1, 1)
         gfx.x = 16
@@ -1321,6 +1331,10 @@ local function prompt_per_region_settings(
                     queue_pending_rows_and_continue(proj, rows, options)
                     return nil
                 end
+            elseif audio_check_hover then
+                pause_audio_check = not pause_audio_check
+                reaper.SetProjExtState(proj, EXT_SECTION, AUDIO_CHECK_OPTION_KEY, pause_audio_check and "1" or "0")
+                set_message("Render now audio checkpoints " .. (pause_audio_check and "enabled." or "disabled."))
             elseif dry_run_hover then
                 dry_run_queue()
             elseif sort_hover then
@@ -1751,7 +1765,8 @@ main = function()
     local pending_rows = nil
     local queue_options = {
         skip_existing = false,
-        mode = "queue"
+        mode = "queue",
+        pause_audio_check = true
     }
     do
         local has_pending, pending_blob = reaper.GetProjExtState(proj, EXT_SECTION, PENDING_REGION_ROWS_KEY)
@@ -1814,11 +1829,12 @@ main = function()
     local completed_label = render_now and "RENDERED" or "QUEUED"
     local source = debug.getinfo(1, "S").source
     local directory = source:sub(1, 1) == "@" and source:sub(2):match("^(.*[/\\])") or ""
-    local render_pass
+    local render_pass, audio_checkpoint
     local markers_original, original_render_state, original_region_selection
     local capture_ok, capture_error = pcall(function()
         if render_now then
             render_pass = dofile((directory or "") .. "lib/render_pass.lua")
+            audio_checkpoint = dofile((directory or "") .. "lib/audio_checkpoint.lua")
             local supported, reason = render_pass.preflight(reaper)
             if not supported then error(reason, 0) end
         end
@@ -1882,7 +1898,7 @@ main = function()
     local function require_original_project()
         if reaper.EnumProjects(-1, "") ~= proj then error("The active project changed; rendering stopped.", 0) end
     end
-    local function submit_render_pass()
+    local function submit_render_pass(kind, label, pattern)
         require_original_project()
         if render_now then
             local complete, reason = render_pass.run(reaper, proj, {
@@ -1891,6 +1907,20 @@ main = function()
             })
             if not complete then
                 render_stop_reason = reason or "Rendering stopped."
+                error(render_stop_reason, 0)
+            end
+            require_original_project()
+            local _, output_directory = reaper.GetSetProjectInfo_String(proj, "RENDER_FILE", "", false)
+            local reviewed, checkpoint_reason = audio_checkpoint.review(reaper, {
+                enabled = queue_options.pause_audio_check,
+                project = proj,
+                kind = kind,
+                label = label,
+                pattern = pattern,
+                output_directory = output_directory
+            })
+            if not reviewed then
+                render_stop_reason = checkpoint_reason
                 error(render_stop_reason, 0)
             end
         else
@@ -2037,7 +2067,7 @@ main = function()
                                     select_only_track(click_track)
                                     reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
                                     commit_tempo_map_changes(proj)
-                                    submit_render_pass()
+                                    submit_render_pass("click", string.format("Click group %d", group_index), click_pattern)
                                     reaper.UpdateArrange()
                                     queued_click_count = queued_click_count + 1
                                     queued_click_region_count = queued_click_region_count + #active_regions
@@ -2137,7 +2167,7 @@ main = function()
                             select_regions(proj, active_regions)
                             reaper.GetSetProjectInfo(proj, "RENDER_BOUNDSFLAG", 5, true)
                             commit_tempo_map_changes(proj)
-                            submit_render_pass()
+                            submit_render_pass("music", string.format("Music group %d, tempo %g (%s)", group_index, group.target_tempo, region_rows_label(active_regions)), new_pattern)
                             reaper.UpdateArrange()
                             queued_regular_count = queued_regular_count + 1
                             queued_regular_region_count = queued_regular_region_count + #active_regions
@@ -2195,7 +2225,7 @@ main = function()
 
                         select_only_track(click_track)
                         commit_tempo_map_changes(proj)
-                        submit_render_pass()
+                        submit_render_pass("click", string.format("Click, tempo %g", base_tempo), click_pattern)
                         reaper.UpdateArrange()
                         log(string.format(
                             "CLICK " .. completed_label .. ": tempo = %g (REAPER: %g) -> pattern: %s",
@@ -2257,7 +2287,7 @@ main = function()
                     set_render_pattern(proj, new_pattern)
 
                     commit_tempo_map_changes(proj)
-                    submit_render_pass()
+                    submit_render_pass("music", string.format("Music pass %d, tempo %g", iteration, target_tempo), new_pattern)
                     reaper.UpdateArrange()
 
                     log(string.format(
