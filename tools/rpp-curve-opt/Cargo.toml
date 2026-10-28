@@ -1,0 +1,8 @@
+[package]
+name = "rpp-curve-opt"
+version = "0.1.0"
+edition = "2021"
+description = "Fit sparse native REAPER CC curves in a separate RPP copy"
+
+[dependencies]
+
