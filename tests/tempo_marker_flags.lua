@@ -11,14 +11,15 @@ for _, path in ipairs(scripts) do
     local file = assert(io.open(path))
     local source = file:read("*a")
     file:close()
-    -- Stop before main(), exposing only the tempo helpers in the same scope.
+    -- Stop before the entry point, exposing only the tempo helpers in the same scope.
     local replacements
-    source, replacements = source:gsub("main%(%)%s*$", "return { capture = capture_tempo_map, restore = restore_tempo_map, scale = scale_tempo_map, ensure = ensure_tempo_marker_at_time }")
-    assert(replacements == 1, path .. ": expected one terminal main() call")
+    source, replacements = source:gsub("[%a_][%w_]*%(%)%s*$", "return { capture = capture_tempo_map, restore = restore_tempo_map, scale = scale_tempo_map, ensure = ensure_tempo_marker_at_time }")
+    assert(replacements == 1, path .. ": expected one terminal entry point call")
 
     local points
     local project_bpm = 120
     local api = {
+        EnumProjects = function() return 0 end,
         GetAppVersion = function() return "7.75" end,
         GetProjectTimeSignature2 = function() return project_bpm, 4 end,
         SetCurrentBPM = function(_, bpm) project_bpm = bpm end,
