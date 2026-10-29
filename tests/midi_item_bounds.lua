@@ -118,6 +118,41 @@ for _, mode in ipairs({ 'start', 'end' }) do
     near(plan.targets[1].left, mode == 'end' and 5 or 4)
     near(plan.targets[1].right, mode == 'start' and 7 or 8)
 end
+-- Check each edge independently in every mode. An aligned enabled edge must
+-- stay put while the other edge is padded; a disabled edge stays untouched.
+for _, span in ipairs({ { 4, 7 }, { 5, 8 }, { 4, 8 } }) do
+    for _, mode in ipairs({ 'both', 'start', 'end' }) do
+        local state
+        api, project, items, state = fixture()
+        local item = items[1]
+        item.start, item.finish = span[1], span[2]
+        item.takes[1].origin = item.start
+        item.takes[1].length = item.finish - item.start
+        local expected_start = mode == 'end' and span[1] or 4
+        local expected_end = mode == 'start' and span[2] or 8
+        local changed = expected_start ~= span[1] or expected_end ~= span[2]
+        plan = bounds.plan(api, project, 'items', mode)
+        assert(#plan.targets == (changed and 1 or 0))
+        assert(bounds.apply(api, project, plan) == (changed and 1 or 0))
+        near(item.start, expected_start); near(item.finish, expected_end)
+        assert(#bounds.plan(api, project, 'items', mode).targets == 0)
+        local _, _, _, writes = state()
+        assert(writes == (changed and 1 or 0))
+    end
+end
+-- Beat-one lead-in is the explicit exception for an aligned start, and still
+-- respects End only. Already aligned ends remain unchanged in every mode.
+for _, mode in ipairs({ 'both', 'start', 'end' }) do
+    api, project, items = fixture()
+    local item = items[2]
+    items[1].selected, item.selected = false, true
+    item.finish, item.takes[1].length = 12, 4
+    plan = bounds.plan(api, project, 'items', mode)
+    assert(bounds.apply(api, project, plan) == (mode == 'end' and 0 or 1))
+    near(item.start, mode == 'end' and 8 or 4); near(item.finish, 12)
+    assert(#bounds.plan(api, project, 'items', mode).targets == 0)
+end
+
 -- First bar at project time zero cannot have a lead-in before the timeline.
 api, project, items = fixture()
 items[1].start, items[1].finish = 0, 4
