@@ -1,0 +1,184 @@
+local bounds = dofile('lib/midi_item_bounds.lua')
+local function near(a, b) assert(math.abs(a - b) < 1e-7, a .. ' ~= ' .. b) end
+local function fixture()
+    local project, other = {}, {}
+    local tracks = { { selected = true }, { selected = false } }
+    local function item(start, finish, notes, track, selected)
+        local it = { start = start, finish = finish, track = track, selected = selected, loop = 1 }
+        it.takes = { { events = notes, origin = start, length = finish - start, rate = 1 } }
+        return it
+    end
+    local function note(time, pitch) return { time, string.char(144, pitch or 60, 96), 1 } end
+    local items = { item(5, 7, { note(5.2), { 6.8, string.char(128, 60, 0), 0 } }, tracks[1], true),
+        item(8, 11.3, { note(8), { 11, string.char(128, 60, 0), 0 } }, tracks[2], false) }
+    local undo, refresh, restored, mutations = 0, 0, 0, 0
+    local saved = {}
+    local function selected(list, predicate)
+        local result = {}; for _, value in ipairs(list) do if predicate(value) then result[#result + 1] = value end end
+        return result
+    end
+    local api = {
+        EnumProjects = function() return project end,
+        TimeMap2_timeToQN = function(_, time) return time end,
+        TimeMap2_QNToTime = function(_, qn) return qn end,
+        TimeMap_QNToMeasures = function(_, qn)
+            local bar = math.floor(qn / 4); return bar, bar * 4, (bar + 1) * 4
+        end,
+        CountMediaItems = function() return #items end,
+        GetMediaItem = function(_, i) return items[i + 1] end,
+        CountSelectedMediaItems = function() return #selected(items, function(it) return it.selected end) end,
+        GetSelectedMediaItem = function(_, i) return selected(items, function(it) return it.selected end)[i + 1] end,
+        CountSelectedTracks = function() return #selected(tracks, function(t) return t.selected end) end,
+        GetSelectedTrack = function(_, i) return selected(tracks, function(t) return t.selected end)[i + 1] end,
+        CountTrackMediaItems = function(t) return #selected(items, function(it) return it.track == t end) end,
+        GetTrackMediaItem = function(t, i) return selected(items, function(it) return it.track == t end)[i + 1] end,
+        GetActiveTake = function(it) return it.takes[1] end,
+        CountTakes = function(it) return #it.takes end,
+        GetTake = function(it, i) return it.takes[i + 1] end,
+        TakeIsMIDI = function(t) return not t.audio end,
+        GetMediaItemTake_Source = function(t) return t end,
+        GetMediaSourceFileName = function(t) return t.file or '' end,
+        GetMediaSourceLength = function(t) return t.length, true end,
+        GetMediaItemTakeInfo_Value = function(t) return t.rate end,
+        MIDI_GetProjQNFromPPQPos = function(t) return t.origin end,
+        MIDI_GetProjTimeFromPPQPos = function(t, ppq) return ppq / 1000 + (t.shift or 0) end,
+        MIDI_GetAllEvts = function(t)
+            local result, previous = {}, 0
+            for _, e in ipairs(t.events) do
+                local ppq = math.floor(e[1] * 1000 + .5)
+                result[#result + 1] = string.pack('<i4Bs4', ppq - previous, e[3] or 0, e[2]); previous = ppq
+            end
+            result[#result + 1] = string.pack('<i4Bs4', 0, 0, string.char(176, 123, 0))
+            return true, table.concat(result)
+        end,
+        GetMediaItemInfo_Value = function(it, key)
+            return ({ D_POSITION = it.start, D_LENGTH = it.finish - it.start, C_LOCK = it.lock or 0, B_LOOPSRC = it.loop })[key]
+        end,
+        GetItemStateChunk = function(it)
+            local id = tostring(it)
+            saved[id] = { start = it.start, finish = it.finish, loop = it.loop }
+            return true, id .. (it.pool and '\nPOOLEDEVTS ' .. it.pool or '')
+        end,
+        SetItemStateChunk = function(it, chunk)
+            local state = saved[chunk:match('[^\n]+')]
+            it.start, it.finish, it.loop = state.start, state.finish, state.loop
+            for _, t in ipairs(it.takes) do t.shift = nil end
+            restored = restored + 1; return true
+        end,
+        SetMediaItemInfo_Value = function(it, key, value)
+            assert(key == 'B_LOOPSRC'); it.loop = value; mutations = mutations + 1; return true
+        end,
+        MIDI_SetItemExtents = function(it, first, last)
+            it.start, it.finish = first, last
+            if it.corrupt then it.takes[1].shift = .1 end
+            return true
+        end,
+        Undo_BeginBlock2 = function() undo = undo + 1 end,
+        Undo_EndBlock2 = function() undo = undo - 1 end,
+        PreventUIRefresh = function(n) refresh = refresh + n end,
+        UpdateArrange = function() end,
+    }
+    return api, project, items, function() return undo, refresh, restored, mutations end, other
+end
+
+local api, project, items = fixture()
+local left, right = bounds.enclose(api, project, 5.1, 8)
+near(left, 4); near(right, 8)
+left, right = bounds.enclose(api, project, 4 - 1e-10, 8 + 1e-10)
+near(left, 4); near(right, 8)
+-- A real varying-meter/tempo mapping is supplied by REAPER, never assumed 4/4.
+local meter = {
+    TimeMap2_timeToQN = function(_, time) return time / 2 end,
+    TimeMap_QNToMeasures = function(_, qn)
+        if qn < 3 then return 0, 0, 3 end
+        if qn < 6.5 then return 1, 3, 6.5 end
+        return 2, 6.5, 11.5
+    end,
+}
+left, right = bounds.enclose(meter, project, 7, 12)
+near(left, 3); near(right, 6.5)
+assert(#bounds.collect(api, project, 'items') == 1)
+assert(#bounds.collect(api, project, 'tracks') == 1)
+assert(#bounds.collect(api, project, 'project') == 2)
+local plan = bounds.plan(api, project, 'items')
+assert(#plan.targets == 1); near(plan.targets[1].left, 4); near(plan.targets[1].right, 8)
+assert(bounds.apply(api, project, plan) == 1)
+near(items[1].start, 4); near(items[1].finish, 8)
+assert(#bounds.plan(api, project, 'items').targets == 0)
+
+-- Beat-one music gets one previous bar; repeated runs do not add more bars.
+api, project, items = fixture()
+plan = bounds.plan(api, project, 'project')
+near(plan.targets[2].left, 4); near(plan.targets[2].right, 12)
+bounds.apply(api, project, plan)
+assert(#bounds.plan(api, project, 'project').targets == 0)
+for _, mode in ipairs({ 'start', 'end' }) do
+    api, project, items = fixture()
+    plan = bounds.plan(api, project, 'items', mode)
+    near(plan.targets[1].left, mode == 'end' and 5 or 4)
+    near(plan.targets[1].right, mode == 'start' and 7 or 8)
+end
+-- First bar at project time zero cannot have a lead-in before the timeline.
+api, project, items = fixture()
+items[1].start, items[1].finish = 0, 4
+items[1].takes[1].origin, items[1].takes[1].length = 0, 4
+items[1].takes[1].events = { { 0, string.char(144, 60, 100) } }
+assert(#bounds.plan(api, project, 'items').targets == 0)
+
+local cases = {
+    { 'locked item', function(it) it.lock = 1 end },
+    { 'repeating MIDI source', function(it) it.takes[1].length = 1 end },
+    { 'external MIDI source', function(it) it.takes[1].file = '/tmp/notes.mid' end },
+    { 'mixed audio/MIDI takes', function(it) it.takes[2] = { audio = true } end },
+    { 'padding would reveal hidden MIDI events', function(it)
+        it.takes[1].events[#it.takes[1].events + 1] = { 7, string.char(144, 61, 100) }
+    end },
+    { 'padding would reveal hidden MIDI events', function(it)
+        table.insert(it.takes[1].events, 1, { 4.5, string.char(144, 61, 100) })
+    end },
+}
+for _, case in ipairs(cases) do
+    api, project, items = fixture(); case[2](items[1])
+    plan = bounds.plan(api, project, 'items')
+    assert(#plan.targets == 0 and plan.skipped[case[1]] == 1, case[1])
+end
+api, project, items = fixture()
+items[1].pool, items[2].pool = '{pool}', '{pool}'
+assert(bounds.plan(api, project, 'items').skipped['shared pooled MIDI'] == 1)
+
+-- Failure in a later item restores every touched item, with balanced UI/Undo.
+local state
+api, project, items, state = fixture(); items[2].corrupt = true
+plan = bounds.plan(api, project, 'project')
+local ok, err = pcall(bounds.apply, api, project, plan)
+assert(not ok and err:find('Original items restored.', 1, true))
+near(items[1].start, 5); near(items[1].finish, 7)
+near(items[2].start, 8); near(items[2].finish, 11.3)
+local undo, refresh, restored = state()
+assert(undo == 0 and refresh == 0 and restored == 2)
+-- Execute the real quick-action entry point: selected items only, no GUI,
+-- unchanged second runs and empty selections create no mutation/Undo block.
+local original_reaper = reaper
+local result_report, deferred
+api, project, items, state = fixture()
+api.defer = function(callback) deferred = callback end
+api.SetExtState = function(section, key, value, persist)
+    assert(section == 'GPhil_MIDI_Item_Bounds' and key == 'last_report' and not persist)
+    result_report = value
+end
+api.ShowConsoleMsg = function(message) error('Unexpected console: ' .. message) end
+reaper = api
+dofile('./GPhil_quantizeMidiItemBounds_selected.lua')
+assert(deferred and result_report:find('1 MIDI items aligned.', 1, true))
+near(items[1].start, 4); near(items[1].finish, 8)
+near(items[2].start, 8); near(items[2].finish, 11.3)
+local _, _, _, writes_before = state()
+dofile('./GPhil_quantizeMidiItemBounds_selected.lua')
+assert(result_report:find('0 MIDI items aligned.', 1, true))
+items[1].selected = false
+dofile('./GPhil_quantizeMidiItemBounds_selected.lua')
+assert(result_report == 'No items selected.')
+local _, _, _, writes_after = state()
+assert(writes_before == writes_after)
+reaper = original_reaper
+print('PASS: scopes, varying meter, boundaries, lead-in, modes, exclusions, rollback, and windowless selected-items action')

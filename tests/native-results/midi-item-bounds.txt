@@ -1,0 +1,19 @@
+items/both: 1 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+items/start: 1 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+items/end: 1 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+tracks/both: 2 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+tracks/start: 2 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+tracks/end: 2 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+project/both: 6 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+project/start: 6 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+project/end: 6 ready / 0 already aligned
+PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo
+PASS: all nine scope/mode cases. Demo saved: /Volumes/DEV/reaper-scripts/examples/midi-item-bounds-demo/MIDI Item Bounds Demo.rpp
