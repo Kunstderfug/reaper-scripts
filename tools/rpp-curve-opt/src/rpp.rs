@@ -129,9 +129,10 @@ pub fn source(
             Event {
                 tick,
                 fields: p.iter().map(|s| s.to_string()).collect(),
-                shaped: lines
-                    .get(i + 1)
-                    .is_some_and(|l| l.trim_start().starts_with("ENV ")),
+                shaped: lines.get(i + 1).is_some_and(|l| {
+                    let fields: Vec<_> = l.split_whitespace().collect();
+                    fields.first() == Some(&"ENV") && fields.get(1) != Some(&"1")
+                }),
                 keep: true,
                 model: None,
             },
@@ -245,6 +246,15 @@ pub fn source(
                     model.shape, model.tension
                 ));
             }
+        } else if line.trim_start().starts_with("ENV ")
+            && i > 0
+            && events
+                .get(&(i - 1))
+                .is_some_and(|e| !e.keep || e.model.is_some())
+        {
+            // Shapes belong to the preceding event, which was removed or
+            // already emitted its replacement ENV. Never leave orphan metadata.
+            continue;
         } else {
             output.push_str(line);
         }
@@ -328,6 +338,25 @@ pub fn transform(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refits_explicit_linear_runs_without_orphan_or_duplicate_envelopes() {
+        let mut input = String::from("<SOURCE MIDI\nHASDATA 1 960 QN\n");
+        for i in 0..=100 {
+            input.push_str(&format!(
+                "E {} b0 0b {:02x}\nENV 1 0 0\n",
+                if i == 0 { 0 } else { 10 },
+                i + 10
+            ));
+        }
+        input.push_str(">\n");
+        let mut stats = Stats::default();
+        let output = source(&input, &[11].into(), 4., true, true, &mut stats).unwrap();
+        assert_eq!(output.matches("b0 0b").count(), 2);
+        assert_eq!(output.matches("ENV ").count(), 2);
+        assert!(!output.contains("ENV 1 0 0.00\nENV"));
+        assert_eq!(stats.before[&11], 101);
+        assert_eq!(stats.after[&11], 2);
+    }
     #[test]
     fn keeps_note_positions_and_other_lanes_when_removing_points() {
         let s = "<SOURCE MIDI\nHASDATA 1 960 QN\nE 0 b0 0b 00\nE 10 b0 0b 01\nE 5 90 3c 64\nE 5 b0 0b 02\nE 5 b0 0d 40\nE 5 b0 0b 03\nE 5 80 3c 00\n>\n";

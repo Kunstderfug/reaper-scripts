@@ -46,7 +46,7 @@ pub fn repair(points: &[Point], ppq: i64) -> Repair {
             if duration > 0
                 && duration <= ppq / 4
                 && delta.abs() >= 12.0
-                && points[a].value.min(points[b].value) <= 2.0
+                && points[a..=b].iter().any(|p| p.value <= 2.0)
                 && points[a..=b]
                     .iter()
                     .all(|p| !p.shaped && p.muted == points[a].muted)
@@ -87,8 +87,9 @@ pub fn repair(points: &[Point], ppq: i64) -> Repair {
     result
 }
 
-// A large step inside a densely recorded, consistently directed fade is a ramp
-// sample, rather than an isolated controller reset. Permit interpolation there.
+// A large step inside a densely recorded, consistently directed ramp is a
+// sample, including ramps ending at a nonzero expression floor. Isolated resets
+// still lack the required four-point dense context.
 fn mark_monotonic_fades(points: &[Point], ppq: i64, smooth: &mut BTreeSet<usize>) {
     let mut start = 0;
     while start + 1 < points.len() {
@@ -116,7 +117,6 @@ fn mark_monotonic_fades(points: &[Point], ppq: i64, smooth: &mut BTreeSet<usize>
         if end >= start + 3
             && points[end].tick - points[start].tick <= ppq * 2
             && (points[end].value - points[start].value).abs() >= 16.0
-            && points[start].value.min(points[end].value) <= 2.0
         {
             smooth.extend(start..=end);
         }
@@ -137,6 +137,87 @@ mod tests {
                 repaired_fade: false,
             })
             .collect()
+    }
+    #[test]
+    fn removes_recorded_floor_collisions_inside_an_already_rising_ramp() {
+        let p = points(&[
+            (14499, 37.),
+            (14524, 45.),
+            (14547, 50.),
+            (14553, 1.),
+            (14571, 55.),
+            (14576, 4.),
+            (14595, 59.),
+            (14816, 63.),
+        ]);
+        let r = repair(&p, 960);
+        assert_eq!(r.removed, [3, 5].into());
+        let cleaned: Vec<_> = p
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !r.removed.contains(i))
+            .map(|(i, p)| Point {
+                repaired_fade: r.smooth.contains(&i),
+                ..*p
+            })
+            .collect();
+        assert!(crate::gesture::optimize(&cleaned, 960, 4.)
+            .iter()
+            .all(|s| s.model.is_some()));
+    }
+    #[test]
+    fn interpolates_recorded_decline_ending_at_nonzero_floor() {
+        let p = points(&[
+            (14816, 63.),
+            (14840, 61.),
+            (14864, 56.),
+            (14888, 53.),
+            (14921, 47.),
+            (14943, 44.),
+            (14967, 42.),
+            (14991, 38.),
+            (15015, 38.),
+            (15039, 34.),
+            (15135, 26.),
+            (15159, 10.),
+            (15390, 10.),
+        ]);
+        let r = repair(&p, 960);
+        assert!(r.removed.is_empty());
+        assert!(r.smooth.contains(&10) && r.smooth.contains(&11));
+        let cleaned: Vec<_> = p
+            .iter()
+            .enumerate()
+            .map(|(i, p)| Point {
+                repaired_fade: r.smooth.contains(&i),
+                ..*p
+            })
+            .collect();
+        assert!(crate::gesture::optimize(&cleaned, 960, 4.)
+            .iter()
+            .all(|s| s.model.is_some()));
+    }
+    #[test]
+    fn preserves_sustained_low_state_and_nonlinear_curves() {
+        let p = points(&[
+            (0, 45.),
+            (24, 50.),
+            (30, 0.),
+            (500, 55.),
+            (506, 1.),
+            (530, 60.),
+        ]);
+        assert!(repair(&p, 960).removed.is_empty());
+        let mut p = points(&[
+            (0, 45.),
+            (24, 50.),
+            (30, 1.),
+            (48, 55.),
+            (53, 4.),
+            (72, 59.),
+        ]);
+        p[1].shaped = true;
+        assert!(repair(&p, 960).removed.is_empty());
     }
     #[test]
     fn removes_the_recorded_fade_out_returns_to_high_values() {

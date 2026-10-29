@@ -140,7 +140,7 @@ fn optimize(
             if let Some(env) = lines.get(i + 1).filter(|line| line.starts_with("ENV ")) {
                 let fields: Vec<_> = env.split_whitespace().collect();
                 let shape = fields[1].parse::<u8>().map_err(|_| "Invalid shape")?;
-                if event.flags >> 4 == 0 && shape == 5 {
+                if event.flags >> 4 != 5 && shape == 5 {
                     let tension = fields[3].parse::<f32>().map_err(|_| "Invalid tension")?;
                     let mut msg = b"\xff\x0fCCBZ \0".to_vec();
                     msg.extend(tension.to_le_bytes());
@@ -328,7 +328,7 @@ mod tests {
                 &mut input,
                 &Event {
                     tick: i * 10,
-                    flags: 1,
+                    flags: 17, // selected, explicitly linear: refit rather than protect
                     msg: vec![0xb0, 11, value],
                 },
                 &mut previous,
@@ -340,6 +340,7 @@ mod tests {
         let decoded = events(&result).unwrap();
         assert!(decoded.iter().any(|e| e.flags >> 4 == 5));
         assert!(decoded.iter().any(|e| bezier(&e.msg).is_some()));
+        assert!(decoded.iter().filter(|e| selected(e, &ccs)).count() <= 3);
         let again = optimize(&result, 960, &ccs, 2., false, true, &mut Stats::default()).unwrap();
         assert_eq!(result, again);
     }
