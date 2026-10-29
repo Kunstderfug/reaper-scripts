@@ -216,4 +216,10 @@ assert(result_report == 'No items selected.')
 local _, _, _, writes_after = state()
 assert(writes_before == writes_after)
 reaper = original_reaper
+api, project, items = fixture()
+plan = bounds.plan(api, project, { items[2] }, 'both', { lead_in = false })
+assert(#plan.targets == 1 and #plan.eligible == 1 and plan.eligible[1] == items[2])
+near(plan.targets[1].left, 8); near(plan.targets[1].right, 12)
+items[2].lock = 1
+assert(#bounds.plan(api, project, { items[2] }, 'both', { lead_in = false }).eligible == 0)
 print('PASS: scopes, varying meter, boundaries, lead-in, modes, exclusions, rollback, and windowless selected-items action')

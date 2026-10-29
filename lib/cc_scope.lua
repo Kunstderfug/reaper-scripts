@@ -21,9 +21,12 @@ function M.detect_ccs(targets)
     end
     return table.concat(eligible, ','), table.concat(excluded, ',')
 end
-function M.collect(api, project, scope)
+function M.collect(api, project, scope, items)
     local chosen = {}
-    if scope == 'items' then
+    if items then
+        assert(scope == 'items', 'Explicit items require item scope.')
+        for _, item in ipairs(items) do chosen[item] = true end
+    elseif scope == 'items' then
         for i = 0, api.CountSelectedMediaItems(project) - 1 do chosen[api.GetSelectedMediaItem(project, i)] = true end
     elseif scope == 'tracks' then
         for i = 0, api.CountSelectedTracks(project) - 1 do
@@ -66,10 +69,26 @@ function M.collect(api, project, scope)
     assert(#targets > 0, 'No active MIDI takes in the chosen scope. Select MIDI items or tracks first.')
     for i = 0, api.CountMediaItems(project) - 1 do
         local item = api.GetMediaItem(project, i)
+        -- Inspect every pool GUID in the item's chunk, rather than requiring
+        -- each unrelated item to be single-take when SWS is unavailable.
+        if not api.BR_GetMidiTakePoolGUID then
+            local ok, chunk = api.GetItemStateChunk(item, '', false)
+            assert(ok, 'Cannot inspect MIDI pooling.')
+            local outside = false
+            for j = 0, api.CountTakes(item) - 1 do
+                local take = api.GetTake(item, j)
+                if api.TakeIsMIDI(take) and not wanted[take] then outside = true end
+            end
+            if outside then
+                for guid in chunk:gmatch('POOLEDEVTS%s+({[^}]+})') do
+                    assert(not pools[guid], 'A selected MIDI pool is shared outside the scope (possibly an inactive take). Unpool that item first; nothing has changed.')
+                end
+            end
+        end
         for j = 0, api.CountTakes(item) - 1 do
             local take = api.GetTake(item, j)
             if api.TakeIsMIDI(take) and not wanted[take] then
-                assert(not pools[pool(take, item)], 'A selected MIDI pool is shared outside the scope (possibly an inactive take). Unpool that item first; nothing has changed.')
+                assert(not pools[key(take)], 'A selected MIDI pool is shared outside the scope (possibly an inactive take). Unpool that item first; nothing has changed.')
             end
         end
     end

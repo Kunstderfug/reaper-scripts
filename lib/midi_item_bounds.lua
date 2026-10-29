@@ -13,6 +13,7 @@ function M.enclose(api, project, start_time, end_time)
 end
 
 function M.collect(api, project, scope)
+    if type(scope) == 'table' then return scope end
     local items = {}
     if scope == 'items' then
         for i = 0, api.CountSelectedMediaItems(project) - 1 do
@@ -61,10 +62,10 @@ local function same_events(before, after)
     return true
 end
 
-function M.plan(api, project, scope, mode)
+function M.plan(api, project, scope, mode, options)
     mode = mode or 'both'
     assert(mode == 'both' or mode == 'start' or mode == 'end', 'Unknown edge mode.')
-    local plan = { targets = {}, skipped = {}, aligned = 0, midi = 0 }
+    local plan = { targets = {}, skipped = {}, aligned = 0, midi = 0, eligible = {} }
     -- Shared sources are excluded: extending a source must not affect another
     -- pool instance, even when that instance is outside the chosen scope.
     local pools, chunks = {}, {}
@@ -120,7 +121,7 @@ function M.plan(api, project, scope, mode)
                     end
                 end
             end
-            if first_note then
+            if first_note and not (options and options.lead_in == false) then
                 local qn = api.TimeMap2_timeToQN(project, first_note)
                 local _, bar = api.TimeMap_QNToMeasures(project, qn + EPS)
                 if math.abs(qn - bar) < 1e-7 then
@@ -143,6 +144,7 @@ function M.plan(api, project, scope, mode)
                     end
                 end
             end
+            if not reason then plan.eligible[#plan.eligible + 1] = item end
             if math.abs(new_start - start) < EPS and math.abs(new_end - finish) < EPS then
                 plan.aligned = plan.aligned + 1
             elseif reason then

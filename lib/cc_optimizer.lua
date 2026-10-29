@@ -42,7 +42,7 @@ function M.run(api, root, options)
     assert(tolerance and tolerance > 0 and tolerance <= 16, 'Tolerance must be >0 and <=16.')
     assert(ccs == 'auto' or ccs == 'continuous' or ccs:match('^%d+[,0-9]*$'), 'Use auto, continuous, or space-separated CC numbers.')
     local started = api.time_precise()
-    local targets = scope_module.collect(api, project, scope)
+    local targets = scope_module.collect(api, project, scope, opt.items)
     if ccs == 'auto' then
         local excluded
         ccs, excluded = scope_module.detect_ccs(targets)

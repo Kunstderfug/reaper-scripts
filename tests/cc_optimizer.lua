@@ -114,3 +114,21 @@ local api,s,items=mock();items[1].data=cc(64)..cc(123)
 local r=module.run(api,'/bundle/',{prompt=false,scope='items'})
 assert(r.changed==0 and s.begin==0 and s.sets==0 and not s.command)
 print('CC auto detection: scoped union, numeric sorting, excluded switch/data lanes and empty result passed')
+local api,s,items=mock()
+local r=module.run(api,'/bundle/',{prompt=false,scope='items',items={items[2]},ccs='11'})
+assert(r.changed==1 and items[1].data=='original1' and items[2].data=='optimized:original2')
+assert(not s.saved and not s.backup)
+print('CC explicit item scope ignores unrelated selected items')
+-- Unrelated multi-take items must not block the no-SWS recording workflow;
+-- shared pool GUIDs still block it even across distinct source pointers.
+local api,s,items=mock()
+api.BR_GetMidiTakePoolGUID=nil
+api.CountTakes=function(it) return it==items[2] and 2 or 1 end
+api.GetTake=function(it,j) return j==0 and it or items[3] end
+api.GetItemStateChunk=function(it) return true,'POOLEDEVTS {pool'..it.id..'}' end
+assert(run(api,'items').changed==1)
+local api,s,items=mock()
+api.BR_GetMidiTakePoolGUID=nil
+api.GetItemStateChunk=function() return true,'POOLEDEVTS {shared}' end
+assert(not pcall(run,api,'items') and s.sets==0)
+print('CC no-SWS pool scan: unrelated multiple takes allowed, shared pools blocked')
