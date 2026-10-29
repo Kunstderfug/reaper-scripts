@@ -10,11 +10,42 @@ tools/rpp-curve-opt/target/release/rpp-curve-opt input.RPP trial.RPP \
 ```
 
 `--track` matches one exact track name; omit it to process all tracks.
+`--threads N` limits parallel MIDI-source workers inside one project (or native
+GCC1 batch). The default is the smaller of eight and the available CPU count;
+workers are also limited by the number of sources. Use `--threads 1` for serial
+processing. Complete MIDI sources are independent jobs; their results and
+statistics are assembled in original source order, so serial and parallel output
+are byte-identical. Parsing, pooled-track validation, snapshot handling, and the
+final project write remain ordered. A failed worker produces no output file.
+When several projects run concurrently, divide the CPU budget across those
+projects (for example, four projects × two source workers on eight CPUs).
+
+The REAPER actions use `bin/rpp-curve-opt` beside the installed scripts. When
+launched from this source checkout, they also accept the release build at
+`tools/rpp-curve-opt/target/release/rpp-curve-opt` produced by the command above.
 `--cc` selects controller lanes (default `1,3,11,13,22`). `--cc continuous` selects CC1–31 except data-entry CC6, CC70–95, and CC102–119, excluding bank/LSB, pedals, NRPN/RPN, increment/decrement, and channel-mode messages.
 `--tolerance` is in MIDI controller values, default 2 out of 127.
 Snapshot removal is on by default; use `--keep-snapshots` to retain them.
 
 ### Whole-gesture mode
+
+With jitter/fade repair enabled, repeated short returns to the expression floor
+are removed even when they interrupt an already-rising ramp. Dense monotonic
+ramps can also interpolate their large samples when ending at a nonzero level.
+Isolated resets, sustained low states and existing nonlinear curves remain
+protected. Repairs intentionally depart from the raw collision samples and
+are reported separately from the curve-fitting tolerance.
+
+Explicit linear CC segments (`ENV 1`, native shape flag 16) are fitted just like
+recorded point runs. Existing nonlinear curves remain protected. Replaced or
+removed linear anchors have their old ENV metadata removed, and linear-to-Bezier
+fits receive native tension metadata.
+
+On a captured 620-source project batch at tolerance 4 with gesture/jitter repair,
+this correction reduced the selected CC anchors from 417,064 to 107,173 (74.3%).
+CC11 went from 119,006 to 29,799 (75.0%). Batch processing took 1.51 seconds on
+the local MacBook; raw batch bytes fell 55.8%. These are copied MIDI measurements,
+not a saved-project size estimate or an audio listening comparison.
 
 Use `--gestures --de-jitter --tolerance 4` for the musical smoothing trial.
 This preserves significant peaks/valleys at their original source ticks, using
@@ -185,3 +216,53 @@ preparation failure, backup failure, rollback after a partial apply, and cancel.
 Native REAPER checks verify one-item CC11 editing, unchanged neighboring items
 and non-target MIDI, exact Undo/Redo, selected-track isolation, whole-project
 backup contents, saving under the same filename, and Undo after saving.
+## GFX window
+
+The compact window uses a 660 × 530 canvas and places shaping controls directly
+below the detected lane rows. All scopes, controller toggles and reports remain
+available.
+
+The pin icon at the upper right toggles always-on-top. It starts enabled and
+remembers your choice between runs. This uses js_ReaScriptAPI; if unavailable,
+the icon is disabled and the remaining optimizer controls still work.
+
+Load `GPhil_optimizeProjectCC_gfx.lua` in REAPER's Actions window using
+**New action → Load ReaScript**, then run it. The original prompt action remains
+available.
+
+The window defaults to **Auto selection**: it follows selected MIDI items or
+selected tracks, using the most recently changed selection when both exist.
+Selection changes update the scope and detected lanes while the window stays
+open, including track selection changes that do not dirty the project.
+Manual scope buttons keep the chosen scope. Whole project is always explicit.
+The window offers selected MIDI items, selected tracks, or the whole project;
+detected continuous CC lanes appear as individual toggles. **Select detected**
+selects the eligible lanes and follows newly detected lanes. Clicking individual
+lanes or **Clear** switches to a custom CC choice, preserved across selection
+changes. Only lanes present in the current scope are sent to the optimizer.
+The lane list is the union across sources: an item missing a chosen CC is skipped
+for that lane. **Other used CCs** allows explicit overrides for
+normally excluded switch/data lanes. Selection changes refresh the detected
+lanes; use **Refresh selection** to rescan manually. Tolerance ranges from 0.5
+to 16 MIDI values. Jitter/fade repair can be toggled independently.
+
+**Optimize CCs** applies directly through the same atomic Undo transaction.
+Whole-project scope creates a backup and saves under the current filename.
+The result shows elapsed time; **Last report** includes the optimizer details
+and backup path, or the complete failure and restore status. On a read-back
+mismatch the event check remains enforced, attempted sources are restored, and
+original/expected/actual buffers plus an event-level report are written locally
+under REAPER's `Data/GPhil/CC-diagnostics` directory. No diagnostics are uploaded.
+SWS cleanup remains a separate action. Escape closes the window.
+
+Apply and restore verification accept one observed REAPER 7.83 normalization:
+an attached Bezier `CCBZ` type byte of 2 becomes 0. Scratch-item round trips of
+the captured original and optimized buffers produced identical stored item
+chunks and every native CC shape/tension for the two forms. All event offsets,
+flags, values and tension bytes must still match exactly; other type changes
+are rejected. This avoids false apply and restore failures on existing curves.
+
+Install the GFX entry point alongside the original action, plus
+`lib/cc_window.lua`, `lib/cc_widgets.lua`, `lib/cc_selection.lua`, and
+`lib/cc_verify.lua`, and `lib/cc_pin.lua`, retaining the existing optimizer
+modules and `bin/rpp-curve-opt` binary.
