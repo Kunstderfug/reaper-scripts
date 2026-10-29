@@ -56,7 +56,7 @@ pub fn blocks(input: &str) -> Result<Vec<Block>, String> {
     Ok(result)
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, PartialEq)]
 pub struct Stats {
     pub before: BTreeMap<u8, usize>,
     pub after: BTreeMap<u8, usize>,
@@ -71,6 +71,50 @@ pub struct Stats {
     pub jitter_deviation: f64,
     pub fade_removed: usize,
     pub fade_deviation: f64,
+}
+
+impl Stats {
+    pub fn merge(&mut self, other: Self) {
+        for (key, value) in other.before {
+            *self.before.entry(key).or_default() += value;
+        }
+        for (key, value) in other.after {
+            *self.after.entry(key).or_default() += value;
+        }
+        for (key, value) in other.shapes {
+            *self.shapes.entry(key).or_default() += value;
+        }
+        self.sources += other.sources;
+        self.unsupported += other.unsupported;
+        self.snapshots += other.snapshots;
+        self.snapshot_bytes += other.snapshot_bytes;
+        self.jitter_removed += other.jitter_removed;
+        self.fade_removed += other.fade_removed;
+        self.max_error = self.max_error.max(other.max_error);
+        self.quiet_error = self.quiet_error.max(other.quiet_error);
+        self.jitter_deviation = self.jitter_deviation.max(other.jitter_deviation);
+        self.fade_deviation = self.fade_deviation.max(other.fade_deviation);
+    }
+}
+
+pub struct TransformOptions<'a> {
+    pub track: Option<&'a str>,
+    pub remove_snapshots: bool,
+    pub de_jitter: bool,
+    pub gestures: bool,
+    pub threads: usize,
+}
+
+impl Default for TransformOptions<'_> {
+    fn default() -> Self {
+        Self {
+            track: None,
+            remove_snapshots: true,
+            de_jitter: false,
+            gestures: false,
+            threads: crate::parallel::default_threads(),
+        }
+    }
 }
 
 struct Event {
@@ -266,11 +310,15 @@ pub fn transform(
     input: &str,
     ccs: &BTreeSet<u8>,
     tolerance: f64,
-    track: Option<&str>,
-    remove_snapshots: bool,
-    de_jitter: bool,
-    gestures: bool,
+    options: TransformOptions<'_>,
 ) -> Result<(String, Stats), String> {
+    let TransformOptions {
+        track,
+        remove_snapshots,
+        de_jitter,
+        gestures,
+        threads,
+    } = options;
     let blocks = blocks(input)?;
     if let Some(selected) = track.filter(|_| !ccs.is_empty()) {
         let mut pools = BTreeMap::<&str, BTreeSet<&str>>::new();
@@ -292,6 +340,7 @@ pub fn transform(
     }
     let mut stats = Stats::default();
     let mut changes = Vec::new();
+    let mut jobs = Vec::new();
     let mut matched_track = track.is_none();
     for b in blocks {
         if track == Some(b.track.as_str()) {
@@ -306,19 +355,28 @@ pub fn transform(
             && !ccs.is_empty()
             && track.is_none_or(|t| t == b.track)
         {
-            let new = source(
-                &input[b.start..b.end],
-                ccs,
-                tolerance,
-                de_jitter,
-                gestures,
-                &mut stats,
-            )?;
-            changes.push((b.start, b.end, new));
+            jobs.push((b.start, b.end));
         }
     }
     if !matched_track {
         return Err(format!("Track not found: {}", track.unwrap()));
+    }
+    let results = crate::parallel::map(&jobs, threads, |&(start, end)| {
+        let mut local = Stats::default();
+        source(
+            &input[start..end],
+            ccs,
+            tolerance,
+            de_jitter,
+            gestures,
+            &mut local,
+        )
+        .map(|text| (start, end, text, local))
+    })?;
+    for result in results {
+        let (start, end, text, local) = result?;
+        changes.push((start, end, text));
+        stats.merge(local);
     }
     changes.sort_by_key(|c| c.0);
     let mut result = String::new();
@@ -371,7 +429,7 @@ mod tests {
         let track = "<TRACK {A}\nNAME \"VIOLIN\"\n>\n";
         let input = format!("<REAPER_PROJECT 0.1\n{track}<EXTENSIONS\n<SWSSNAPSHOT \"Mix\"\n<TRACK {{A}}\n>\n>\n>\n>\n");
         let (r, stats) =
-            transform(&input, &BTreeSet::new(), 2.0, None, true, false, false).unwrap();
+            transform(&input, &BTreeSet::new(), 2.0, TransformOptions::default()).unwrap();
         assert_eq!(stats.snapshots, 1);
         assert!(r.contains(track));
         assert!(!r.contains("SWSSNAPSHOT"));
@@ -382,10 +440,10 @@ mod tests {
             "<REAPER_PROJECT 0.1\n>\n",
             &[11].into(),
             2.,
-            Some("missing"),
-            true,
-            false,
-            false
+            TransformOptions {
+                track: Some("missing"),
+                ..Default::default()
+            }
         )
         .is_err());
     }
@@ -393,10 +451,16 @@ mod tests {
     #[test]
     fn refuses_cross_track_pool_in_track_only_edit() {
         let input = "<REAPER_PROJECT 0.1\n<TRACK\nNAME A\n<SOURCE MIDI\nPOOLEDEVTS {P}\n>\n>\n<TRACK\nNAME B\n<SOURCE MIDI\nPOOLEDEVTS {P}\n>\n>\n>\n";
-        assert!(
-            transform(input, &[11].into(), 2., Some("A"), true, false, false)
-                .unwrap_err()
-                .contains("pooled")
-        );
+        assert!(transform(
+            input,
+            &[11].into(),
+            2.,
+            TransformOptions {
+                track: Some("A"),
+                ..Default::default()
+            }
+        )
+        .unwrap_err()
+        .contains("pooled"));
     }
 }

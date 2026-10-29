@@ -4,13 +4,16 @@ mod fade;
 mod gesture;
 mod jitter;
 mod native;
+mod parallel;
+#[cfg(test)]
+mod parallel_regression;
 mod rpp;
 use std::{collections::BTreeSet, env, fs, io::Write, path::PathBuf};
 
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.len() < 2 {
-        return Err("Usage: rpp-curve-opt INPUT.RPP OUTPUT.RPP [--track EXACT_NAME] [--cc 1,3,11,13,22] [--tolerance 2] [--de-jitter] [--gestures] [--snapshots-only] [--keep-snapshots]".into());
+        return Err("Usage: rpp-curve-opt INPUT.RPP OUTPUT.RPP [--track EXACT_NAME] [--cc 1,3,11,13,22] [--tolerance 2] [--de-jitter] [--gestures] [--snapshots-only] [--keep-snapshots] [--threads N]".into());
     }
     let input = PathBuf::from(&args[0]);
     let output = PathBuf::from(&args[1]);
@@ -25,6 +28,7 @@ fn run() -> Result<(), String> {
     let mut de_jitter = false;
     let mut gestures = false;
     let mut native_batch = false;
+    let mut threads = parallel::default_threads();
     let mut i = 2;
     while i < args.len() {
         let key = args[i].as_str();
@@ -34,7 +38,7 @@ fn run() -> Result<(), String> {
             "--de-jitter" => de_jitter = true,
             "--gestures" => gestures = true,
             "--native-batch" => native_batch = true,
-            "--track" | "--cc" | "--tolerance" => {
+            "--track" | "--cc" | "--tolerance" | "--threads" => {
                 i += 1;
                 let value = args.get(i).ok_or(format!("Missing value for {key}"))?;
                 match key {
@@ -59,6 +63,14 @@ fn run() -> Result<(), String> {
                             return Err("CCs must be 0..127".into());
                         }
                     }
+                    "--threads" => {
+                        threads = value
+                            .parse()
+                            .map_err(|_| "Threads must be a positive integer")?;
+                        if threads == 0 {
+                            return Err("Threads must be a positive integer".into());
+                        }
+                    }
                     _ => tolerance = value.parse().map_err(|_| "Invalid tolerance")?,
                 }
             }
@@ -74,17 +86,20 @@ fn run() -> Result<(), String> {
     }
     let data = fs::read(&input).map_err(|e| e.to_string())?;
     let (result, stats) = if native_batch {
-        native::batch(&data, &ccs, tolerance, de_jitter, gestures)?
+        native::batch(&data, &ccs, tolerance, de_jitter, gestures, threads)?
     } else {
         let text = std::str::from_utf8(&data).map_err(|_| "RPP is not UTF-8")?;
         let (result, stats) = rpp::transform(
             text,
             &ccs,
             tolerance,
-            track,
-            remove_snapshots,
-            de_jitter,
-            gestures,
+            rpp::TransformOptions {
+                track,
+                remove_snapshots,
+                de_jitter,
+                gestures,
+                threads,
+            },
         )?;
         rpp::blocks(&result)?;
         (result.into_bytes(), stats)
@@ -109,6 +124,10 @@ fn run() -> Result<(), String> {
         stats.sources,
         stats.snapshots,
         stats.snapshot_bytes
+    );
+    println!(
+        "Source worker limit: {}",
+        parallel::worker_count(threads, usize::MAX)
     );
     println!(
         "Fit mode: {} (tolerance {tolerance})",

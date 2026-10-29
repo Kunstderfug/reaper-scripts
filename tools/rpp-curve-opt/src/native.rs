@@ -171,14 +171,14 @@ pub fn batch(
     tolerance: f64,
     jitter: bool,
     gestures: bool,
+    threads: usize,
 ) -> Result<(Vec<u8>, Stats), String> {
     if data.len() < 8 || &data[..4] != b"GCC1" {
         return Err("Invalid native MIDI batch".into());
     }
     let count = u32::from_le_bytes(data[4..8].try_into().unwrap());
     let mut pos = 8;
-    let mut output = data[..8].to_vec();
-    let mut stats = Stats::default();
+    let mut jobs = Vec::new();
     for _ in 0..count {
         if data.len() - pos < 12 {
             return Err("Truncated MIDI batch".into());
@@ -190,22 +190,25 @@ pub fn batch(
             return Err("Invalid MIDI batch length/PPQ".into());
         }
         let end = pos + len as usize;
-        let result = optimize(
-            &data[pos..end],
-            ppq,
-            ccs,
-            tolerance,
-            jitter,
-            gestures,
-            &mut stats,
-        )?;
+        jobs.push((ppq, &data[pos..end]));
         pos = end;
-        output.extend(ppq.to_le_bytes());
-        output.extend((result.len() as u64).to_le_bytes());
-        output.extend(result);
     }
     if pos != data.len() {
         return Err("Trailing MIDI batch data".into());
+    }
+    let results = crate::parallel::map(&jobs, threads, |&(ppq, source)| {
+        let mut local = Stats::default();
+        optimize(source, ppq, ccs, tolerance, jitter, gestures, &mut local)
+            .map(|result| (ppq, result, local))
+    })?;
+    let mut output = data[..8].to_vec();
+    let mut stats = Stats::default();
+    for result in results {
+        let (ppq, result, local) = result?;
+        output.extend(ppq.to_le_bytes());
+        output.extend((result.len() as u64).to_le_bytes());
+        output.extend(result);
+        stats.merge(local);
     }
     Ok((output, stats))
 }
