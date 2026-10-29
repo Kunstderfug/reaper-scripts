@@ -1,0 +1,9 @@
+500 items; 50 groups across 10 tracks; clustered edges within 0.2 seconds; 32 notes/item; 120 BPM; 4/4; no FX
+run 1: plan 19.500 ms, apply 22.022 ms, total 41.522 ms, aligned rescan 18.831 ms
+run 2: plan 19.285 ms, apply 12.841 ms, total 32.126 ms, aligned rescan 19.327 ms
+run 3: plan 18.445 ms, apply 13.276 ms, total 31.721 ms, aligned rescan 20.054 ms
+500 items; 50 groups across 10 tracks; clustered edges within 0.2 seconds; 256 notes/item; 120 BPM; 4/4; no FX
+run 1: plan 117.075 ms, apply 70.866 ms, total 187.941 ms, aligned rescan 122.958 ms
+run 2: plan 131.763 ms, apply 80.829 ms, total 212.592 ms, aligned rescan 123.479 ms
+run 3: plan 112.957 ms, apply 81.490 ms, total 194.447 ms, aligned rescan 122.133 ms
+PASS: all 500 changed each run; preservation checks passed; second runs no changes.
