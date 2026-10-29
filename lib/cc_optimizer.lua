@@ -3,6 +3,7 @@ local M = {}
 local here = assert(debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])'))
 local scope_module = dofile(here .. 'cc_scope.lua')
 local native = dofile(here .. 'cc_native.lua')
+local verify = dofile(here .. 'cc_verify.lua')
 local function backup(api, project, filename)
     assert(filename ~= '', 'Save the project once before whole-project optimization.')
     local stem = filename:gsub('%.[Rr][Pp][Pp]$', '')
@@ -23,8 +24,7 @@ function M.run(api, root, options)
     local project, filename = api.EnumProjects(-1, '')
     assert(project, 'No current project.')
     assert(api.GetPlayStateEx(project) & 4 == 0, 'Stop recording before optimizing CC curves.')
-    local binary = opt.binary or root .. 'bin/rpp-curve-opt'
-    assert(api.file_exists(binary), 'Optimizer binary missing: ' .. binary)
+    local binary = native.resolve_binary(api, root, opt.binary)
     local scope, ccs, tolerance, jitter = opt.scope or 'items', opt.ccs or 'auto', opt.tolerance or 4, opt.jitter ~= false
     if opt.prompt ~= false then
         local ok, values = api.GetUserInputs('Optimize CC gestures — one Undo step', 4,
@@ -63,23 +63,25 @@ function M.run(api, root, options)
     local label = 'Optimize CC gestures: ' .. scope .. ' / CC ' .. ccs
     api.Undo_BeginBlock2(project)
     api.PreventUIRefresh(1)
+    local touched = {}
     local ok, err = xpcall(function()
         for _, target in ipairs(changed) do
+            touched[#touched + 1] = target
             assert(api.MIDI_SetAllEvts(target.take, target.after), 'Could not apply MIDI result.')
             local read_ok, actual = api.MIDI_GetAllEvts(target.take, '')
-            assert(read_ok and actual == target.after, 'MIDI verification failed after applying result.')
+            if not read_ok or not verify.matches(target.after,actual) then error(verify.failure(api,target,read_ok and actual or nil),0) end
             api.UpdateItemInProject(target.item)
             api.MIDI_RefreshEditors(target.take)
         end
     end, debug.traceback)
     local rollback_failed = false
     if not ok then
-        for _, target in ipairs(changed) do
+        for _, target in ipairs(touched) do
             local restored, verified = pcall(function()
                 assert(api.MIDI_SetAllEvts(target.take, target.before))
                 local read_ok, data = api.MIDI_GetAllEvts(target.take, '')
                 api.MIDI_RefreshEditors(target.take)
-                return read_ok and data == target.before
+                return read_ok and verify.matches(target.before,data)
             end)
             rollback_failed = rollback_failed or not restored or not verified
         end

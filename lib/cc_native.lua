@@ -1,5 +1,16 @@
 -- Temporary batch transport for native MIDI buffers; no project mutations.
 local M = {}
+function M.resolve_binary(api, root, override)
+    local installed = root .. 'bin/rpp-curve-opt'
+    local release = root .. 'tools/rpp-curve-opt/target/release/rpp-curve-opt'
+    if override then
+        assert(api.file_exists(override), 'Optimizer binary missing: ' .. override)
+        return override
+    end
+    if api.file_exists(installed) then return installed end
+    if api.file_exists(release) then return release end
+    error('Optimizer binary missing: ' .. installed .. '\nFor a source checkout, build tools/rpp-curve-opt with cargo build --release.', 0)
+end
 local function quote(value)
     assert(not value:find('[\r\n]'), 'Paths may not contain newlines')
     return '"' .. value:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
