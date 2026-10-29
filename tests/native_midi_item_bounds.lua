@@ -96,6 +96,46 @@ local ok, err = xpcall(function()
         end
     end
     reset()
+    -- Real REAPER extents must honor region limits between barlines, including
+    -- MIDI preservation, idempotence, unchanged opposite edges, and Undo.
+    local region_start, region_end = 1.1, 7.5
+    local region_id = api.AddProjectMarker2(project, true,
+        api.TimeMap2_QNToTime(project, region_start),
+        api.TimeMap2_QNToTime(project, region_end), 'Off-bar boundary regression', -1, 0)
+    assert(region_id >= 0)
+    for _, mode in ipairs({ 'both', 'start', 'end' }) do
+        reset()
+        local item = items[1]
+        local old_start = api.GetMediaItemInfo_Value(item, 'D_POSITION')
+        local old_end = old_start + api.GetMediaItemInfo_Value(item, 'D_LENGTH')
+        local plan = bounds.plan(api, project, 'items', mode)
+        assert(#plan.targets == 1)
+        near(plan.targets[1].left, mode == 'end' and 1.3 or region_start)
+        near(plan.targets[1].right, mode == 'start' and 7.2 or region_end)
+        assert(bounds.apply(api, project, plan) == 1)
+        assert(#bounds.plan(api, project, 'items', mode).targets == 0)
+        api.Undo_DoUndo2(project)
+        item = api.GetMediaItem(project, 0)
+        near(api.GetMediaItemInfo_Value(item, 'D_POSITION'), old_start)
+        near(api.GetMediaItemInfo_Value(item, 'D_LENGTH'), old_end - old_start)
+    end
+    assert(api.SetProjectMarker3(project, region_id, true,
+        api.TimeMap2_QNToTime(project, 1.5), api.TimeMap2_QNToTime(project, 7.1),
+        'Existing overhang regression', 0))
+    for _, mode in ipairs({ 'both', 'start', 'end' }) do
+        reset()
+        local item = items[1]
+        local plan = bounds.plan(api, project, 'items', mode)
+        assert(#plan.targets == 1)
+        near(plan.targets[1].left, mode == 'end' and 1.3 or 1.5)
+        near(plan.targets[1].right, mode == 'start' and 7.2 or 7.1)
+        assert(bounds.apply(api, project, plan) == 1)
+        assert(#bounds.plan(api, project, 'items', mode).targets == 0)
+        api.Undo_DoUndo2(project)
+    end
+    assert(api.DeleteProjectMarker(project, region_id, true))
+    log('PASS: off-bar region limits in all edge modes, MIDI preservation, idempotence, Undo')
+    reset()
     -- Leave all tracks selected so the initial UI has a useful track scope.
     api.SelectAllMediaItems(project, false)
     for i = 0, api.CountTracks(project) - 1 do api.SetTrackSelected(api.GetTrack(project, i), true) end

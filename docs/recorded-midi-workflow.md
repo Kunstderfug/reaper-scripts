@@ -43,8 +43,9 @@ multiple items](https://dlx.reaper.fm/userguide/html/).
 While enabled, stopping a recording waits 0.2 seconds for REAPER to finish, then:
 
 1. Expands the recorded MIDI item's start/end to enclosing barlines, respecting
-   the project's tempo and time signatures. Adds no extra lead-in bar. An edge
-   already on a barline stays there. MIDI note timing stays unchanged.
+   the project's tempo and time signatures. Region starts and ends limit the
+   expansion even when they are between barlines. An edge already at a region
+   boundary stays there. Adds no extra lead-in bar. MIDI note timing stays unchanged.
 2. In **Align + CC** mode only, optimizes detected continuous CC lanes using tolerance 4 and jitter/fade
    repair, with the same engine as `GPhil_optimizeProjectCC.lua`. Switch/data
    lanes (including sustain) are excluded by automatic detection.
@@ -66,7 +67,14 @@ does not automatically restart after quitting REAPER.
 Locked items, shared MIDI pools, repeating/file-backed sources and other unsafe
 edge expansions retain the existing alignment exclusions and are skipped for
 both alignment and optimization. Skipped items still open for manual editing.
-Markers and region boundaries inside a bar do not override barlines.
+Standalone markers do not override barlines. For nested/overlapping regions,
+the nearest containing boundary for each edge wins. Nearby overhangs are
+trimmed to the region boundary when most of the item lies in that region and
+the overhangs fit within its boundary bars. This also repairs edges previously
+rounded outward to bars. Items spanning adjacent regions or extending beyond
+those boundary bars are not collapsed into a single region. Region trims may
+hide or cut off playback of notes beyond the boundary; MIDI events retain
+their source timing and data, and Undo restores the original item edges.
 
 Install the entry scripts and `lib/` dependencies together. Align + CC also
 requires `bin/rpp-curve-opt`.

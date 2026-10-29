@@ -19,6 +19,7 @@ local function fixture()
     end
     local api = {
         EnumProjects = function() return project end,
+        CountProjectMarkers = function() return 0 end,
         TimeMap2_timeToQN = function(_, time) return time end,
         TimeMap2_QNToTime = function(_, qn) return qn end,
         TimeMap_QNToMeasures = function(_, qn)
@@ -222,4 +223,55 @@ assert(#plan.targets == 1 and #plan.eligible == 1 and plan.eligible[1] == items[
 near(plan.targets[1].left, 8); near(plan.targets[1].right, 12)
 items[2].lock = 1
 assert(#bounds.plan(api, project, { items[2] }, 'both', { lead_in = false }).eligible == 0)
-print('PASS: scopes, varying meter, boundaries, lead-in, modes, exclusions, rollback, and windowless selected-items action')
+-- Region limits apply to the real planner in every scope and edge mode.
+for _, scope in ipairs({ 'items', 'tracks', 'project' }) do
+    for _, mode in ipairs({ 'both', 'start', 'end' }) do
+        api, project, items = fixture()
+        api.CountProjectMarkers = function() return 1 end
+        api.EnumProjectMarkers3 = function() return 1, true, 4.5, 7.5 end
+        local item = items[1]
+        local _, before = api.MIDI_GetAllEvts(item.takes[1], '')
+        plan = bounds.plan(api, project, scope, mode)
+        assert(bounds.apply(api, project, plan) >= 1)
+        near(item.start, mode == 'end' and 5 or 4.5)
+        near(item.finish, mode == 'start' and 7 or 7.5)
+        local _, after = api.MIDI_GetAllEvts(item.takes[1], '')
+        assert(before == after)
+        assert(#bounds.plan(api, project, scope, mode).targets == 0)
+    end
+end
+
+-- Region start overrides beat-one lead-in, and common off-bar ends stay fixed.
+api, project, items = fixture()
+items[1].start, items[1].finish = 4.2, 11.5
+items[1].takes[1].origin, items[1].takes[1].length = 4.2, 7.3
+items[2].finish, items[2].takes[1].length = 11.5, 3.5
+api.CountProjectMarkers = function() return 1 end
+api.EnumProjectMarkers3 = function() return 1, true, 4.1, 11.5 end
+plan = bounds.plan(api, project, 'project')
+near(plan.targets[1].left, 4.1); near(plan.targets[2].left, 4.1)
+near(plan.targets[1].right, 11.5); near(plan.targets[2].right, 11.5)
+assert(bounds.apply(api, project, plan) == 2)
+assert(#bounds.plan(api, project, 'project').targets == 0)
+-- Trim both existing overhangs while preserving source MIDI (including events
+-- that become hidden). Disabled edges remain exact, and trim failures roll back.
+for _, mode in ipairs({ 'both', 'start', 'end' }) do
+    api, project, items = fixture()
+    local item = items[1]
+    item.start, item.finish, item.loop = 4.4, 11.572, 0
+    item.takes[1].origin, item.takes[1].length = 4.4, 7.172
+    item.takes[1].events = {
+        { 4.45, string.char(144, 60, 100) },
+        { 11.55, string.char(128, 60, 0) },
+    }
+    api.CountProjectMarkers = function() return 1 end
+    api.EnumProjectMarkers3 = function() return 1, true, 4.5, 11.5 end
+    local _, before = api.MIDI_GetAllEvts(item.takes[1], '')
+    plan = bounds.plan(api, project, 'items', mode)
+    assert(bounds.apply(api, project, plan) == 1)
+    near(item.start, mode == 'end' and 4.4 or 4.5)
+    near(item.finish, mode == 'start' and 11.572 or 11.5)
+    local _, after = api.MIDI_GetAllEvts(item.takes[1], '')
+    assert(before == after and #bounds.plan(api, project, 'items', mode).targets == 0)
+end
+print('PASS: scopes, varying meter, regions, lead-in, modes, exclusions, rollback, and windowless selected-items action')

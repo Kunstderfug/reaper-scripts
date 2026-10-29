@@ -45,7 +45,7 @@ function M.open(api, g)
         if ui.button(554, 28, 86, 26, pin.enabled and 'Pinned' or 'Pin', pin.enabled, pin.window ~= nil) then
             pin.set(not pin.enabled)
         end
-        ui.text(20, 62, 'Whole bars. Every note stays in place.', 13, 'muted')
+        ui.text(20, 62, 'Bar alignment with region limits. Every note stays in place.', 13, 'muted')
         ui.rect(20, 84, 620, 1, 'line')
         ui.text(20, 96, '01  SCOPE', 11, 'muted')
         local scopes = { {'auto', 'Auto selection'}, {'items', 'MIDI items'}, {'tracks', 'Tracks'}, {'project', 'Whole project'} }
@@ -57,17 +57,17 @@ function M.open(api, g)
         ui.text(20, 157, (s.scope == 'items' and 'Selected items' or s.scope == 'tracks'
             and 'Selected tracks' or 'Whole project') .. ' / ' .. (s.plan and s.plan.midi or 0) .. ' MIDI items', 13, 'teal')
         if ui.button(530, 151, 110, 26, 'Refresh') then refresh() end
-        ui.text(20, 198, '02  ALIGN TO BARS', 11, 'muted')
+        ui.text(20, 198, '02  ALIGN EDGES', 11, 'muted')
         local modes = { {'both', 'Start + end'}, {'start', 'Start only'}, {'end', 'End only'} }
         for i, mode in ipairs(modes) do
             if ui.button(20 + (i - 1) * 210, 218, 200, 32, mode[2], s.mode == mode[1]) then
                 s.mode = mode[1]; refresh()
             end
         end
-        ui.text(20, 271, 'Extend enabled edges outward to the surrounding barlines.', 15)
-        ui.text(20, 301, 'First note on beat 1: add one lead-in bar (when space allows).', 13, 'muted')
+        ui.text(20, 271, 'Align to bars and regions; trim nearby region overhangs.', 15)
+        ui.text(20, 301, 'Beat-one lead-in stays within the region and project start.', 13, 'muted')
         ui.text(20, 325, 'Notes, CCs and other MIDI events keep their exact timing.', 13, 'muted')
-        ui.text(20, 349, 'Padding adds silence; repeating or shared sources are skipped.', 12, 'muted')
+        ui.text(20, 349, 'Region trims can hide notes; repeating/shared sources are skipped.', 12, 'muted')
         ui.rect(20, 382, 620, 1, 'line')
         local report = s.problem or s.plan and bounds.summary(s.plan) or ''
         ui.text(20, 396, report:match('[^\n]+') or '', 13, s.problem and 'error' or 'teal')

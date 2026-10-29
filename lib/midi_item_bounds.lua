@@ -1,6 +1,8 @@
 -- Scope, measure-aware planning, and verified item-edge changes. No MIDI writes.
 local M = {}
 local EPS = 1e-8
+local here = assert(debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])'))
+local region_bounds = dofile(here .. 'midi_region_bounds.lua')
 
 function M.enclose(api, project, start_time, end_time)
     local first = api.TimeMap2_timeToQN(project, start_time)
@@ -66,6 +68,7 @@ function M.plan(api, project, scope, mode, options)
     mode = mode or 'both'
     assert(mode == 'both' or mode == 'start' or mode == 'end', 'Unknown edge mode.')
     local plan = { targets = {}, skipped = {}, aligned = 0, midi = 0, eligible = {} }
+    local regions = region_bounds.collect(api, project)
     -- Shared sources are excluded: extending a source must not affect another
     -- pool instance, even when that instance is outside the chosen scope.
     local pools, chunks = {}, {}
@@ -129,6 +132,7 @@ function M.plan(api, project, scope, mode, options)
                     left = math.min(left, math.max(api.TimeMap2_timeToQN(project, 0), previous))
                 end
             end
+            left, right = region_bounds.limit(api, project, regions, start, finish, left, right, mode)
             if mode == 'end' then left = api.TimeMap2_timeToQN(project, start) end
             if mode == 'start' then right = api.TimeMap2_timeToQN(project, finish) end
             target.left, target.right = left, right
@@ -188,7 +192,7 @@ function M.apply(api, project, plan)
     end
     api.PreventUIRefresh(-1)
     api.UpdateArrange()
-    api.Undo_EndBlock2(project, 'GPhil: Pad MIDI item edges to bars', -1)
+    api.Undo_EndBlock2(project, 'GPhil: Align MIDI item edges to bars and region limits', -1)
     if not ok then error(tostring(err) .. (restored and '\nOriginal items restored.'
         or '\nRestoration failed. Use Undo to restore original items.'), 0) end
     return #plan.targets

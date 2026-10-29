@@ -7,6 +7,13 @@ There are no instrument plug-ins; the notes are for visual alignment testing.
 Run `GPhil_quantizeMidiItemBounds_gfx.lua` from the Actions list. Choose selected
 MIDI items, selected tracks, or the whole project, then Start + end, Start only,
 or End only. Start/end adjustments expand the existing item edges outward.
+Region starts and ends cap those expansions, including boundaries between
+barlines. Existing edges at region boundaries remain there. Overlapping/nested
+regions use the nearest containing boundary for each edge. Nearby region
+overhangs trim inward when most of the item lies in that region and both edges
+fit within its boundary bars. Spans into adjacent regions and longer overhangs
+are preserved. Trimming can hide notes beyond the boundary; source MIDI data
+and timing remain unchanged, with Undo restoring the original item edges.
 For a quick action or keyboard shortcut, run
 `GPhil_quantizeMidiItemBounds_selected.lua`: it adjusts both edges of selected
 MIDI items immediately, without opening a window or showing a completion dialog.
@@ -15,6 +22,7 @@ the last result (including skips) is also stored in transient ExtState
 `GPhil_MIDI_Item_Bounds/last_report`.
 If the first note starts on beat 1, start adjustment includes the preceding bar
 when it is available after project time zero. Running again adds no more bars.
+The lead-in also stops at region starts.
 
 The script preserves note/event timing and properties, with one Undo step. It
 does not automatically save. Non-repeating MIDI items have source looping
