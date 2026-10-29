@@ -41,6 +41,12 @@ local ok, err = xpcall(function()
                     api.MIDI_GetPPQPosFromProjQN(take, first),
                     api.MIDI_GetPPQPosFromProjQN(take, last), 0, 55 + index * 4 + n, 75 + n * 5, true))
             end
+            -- Keep the general scope/region fixtures occupied into their last
+            -- bar now that the planner trims empty note tails by default.
+            assert(api.MIDI_InsertNote(take, false, false,
+                api.MIDI_GetPPQPosFromProjQN(take, span[2] - .2),
+                api.MIDI_GetPPQPosFromProjQN(take, span[2] - .05),
+                0, 80 + index, 80, true))
             assert(api.MIDI_InsertCC(take, false, false,
                 api.MIDI_GetPPQPosFromProjQN(take, span[3]), 176, 0, 11, 90))
             api.MIDI_Sort(take)
@@ -95,6 +101,21 @@ local ok, err = xpcall(function()
             log('PASS: real native extents, MIDI timing, scope, unchanged opposite edge, idempotence, Undo')
         end
     end
+    reset()
+    -- A recording stopped just past the last occupied bar must trim back.
+    assert(api.SetMediaItemInfo_Value(items[1], 'B_LOOPSRC', 0))
+    local old_start = api.GetMediaItemInfo_Value(items[1], 'D_POSITION')
+    local stop_time = api.TimeMap2_QNToTime(project, 8.072)
+    assert(api.SetMediaItemInfo_Value(items[1], 'D_LENGTH', stop_time - old_start))
+    api.Undo_OnStateChangeEx2(project, 'Create note-tail regression fixture', -1, -1)
+    local tail_plan = bounds.plan(api, project, 'items', 'end')
+    assert(#tail_plan.targets == 1); near(tail_plan.targets[1].right, 8)
+    assert(bounds.apply(api, project, tail_plan) == 1)
+    assert(#bounds.plan(api, project, 'items', 'end').targets == 0)
+    api.Undo_DoUndo2(project)
+    local restored = api.GetMediaItem(project, 0)
+    near(api.GetMediaItemInfo_Value(restored, 'D_POSITION') + api.GetMediaItemInfo_Value(restored, 'D_LENGTH'), stop_time)
+    log('PASS: trim empty recording tail, preserve MIDI, idempotence, Undo')
     reset()
     -- Real REAPER extents must honor region limits between barlines, including
     -- MIDI preservation, idempotence, unchanged opposite edges, and Undo.

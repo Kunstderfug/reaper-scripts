@@ -3,6 +3,7 @@ local M = {}
 local EPS = 1e-8
 local here = assert(debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])'))
 local region_bounds = dofile(here .. 'midi_region_bounds.lua')
+local note_bounds = dofile(here .. 'midi_note_bounds.lua')
 
 function M.enclose(api, project, start_time, end_time)
     local first = api.TimeMap2_timeToQN(project, start_time)
@@ -64,6 +65,54 @@ local function same_events(before, after)
     return true
 end
 
+-- Resolve notes and region clipping together before changing the item. A
+-- region trim can hide the last note entirely, exposing an earlier note tail.
+local function resolve_edges(api, project, regions, takes, start, finish, mode, options)
+    local steps = #regions * 4 + 8
+    for _, entry in ipairs(takes) do steps = steps + #entry.before * 2 end
+    for _ = 1, steps do
+        local left, right = M.enclose(api, project, start, finish)
+        local first_note
+        for _, entry in ipairs(takes) do
+            for _, event in ipairs(entry.before) do
+                if #event.message == 3 and event.message:byte(1) & 240 == 144
+                    and event.message:byte(3) > 0 and event.time >= start - EPS
+                    and event.time < finish - EPS then
+                    first_note = math.min(first_note or event.time, event.time)
+                end
+            end
+        end
+        if first_note and not (options and options.lead_in == false) then
+            local qn = api.TimeMap2_timeToQN(project, first_note)
+            local _, bar = api.TimeMap_QNToMeasures(project, qn + EPS)
+            if math.abs(qn - bar) < 1e-7 then
+                local _, previous = api.TimeMap_QNToMeasures(project, bar - 1e-6)
+                left = math.min(left, math.max(api.TimeMap2_timeToQN(project, 0), previous))
+            end
+        end
+        local bar_left, bar_right = left, right
+        if mode ~= 'start' then
+            local last_note = note_bounds.last_end(takes, start, finish)
+            if last_note then
+                -- Full note duration, not stop time or late CCs, owns the end.
+                local _, note_right = M.enclose(api, project, start, last_note)
+                right = note_right
+            end
+        end
+        left, right = region_bounds.limit(api, project, regions, start, finish, left, right, mode)
+        if right <= left + EPS then
+            -- A region-start trim may hide all early notes. Keep a valid item.
+            left, right = region_bounds.limit(api, project, regions, start, finish, bar_left, bar_right, mode)
+        end
+        if mode == 'end' then left = api.TimeMap2_timeToQN(project, start) end
+        if mode == 'start' then right = api.TimeMap2_timeToQN(project, finish) end
+        local first, last = api.TimeMap2_QNToTime(project, left), api.TimeMap2_QNToTime(project, right)
+        if math.abs(first - start) < 1e-10 and math.abs(last - finish) < 1e-10 then return left, right end
+        start, finish = first, last
+    end
+    error('Note and region edge planning did not converge; nothing changed.')
+end
+
 function M.plan(api, project, scope, mode, options)
     mode = mode or 'both'
     assert(mode == 'both' or mode == 'start' or mode == 'end', 'Unknown edge mode.')
@@ -112,29 +161,7 @@ function M.plan(api, project, scope, mode, options)
                 end
                 target.takes[#target.takes + 1] = { take = take, before = before }
             end
-            -- Add one lead-in bar only when the first visible note is on beat 1.
-            -- Base this on note position, not the item edge, to stay idempotent.
-            local first_note
-            for _, entry in ipairs(target.takes) do
-                for _, event in ipairs(entry.before) do
-                    if #event.message == 3 and event.message:byte(1) & 240 == 144
-                        and event.message:byte(3) > 0 and event.time >= start - EPS
-                        and event.time < finish - EPS then
-                        first_note = math.min(first_note or event.time, event.time)
-                    end
-                end
-            end
-            if first_note and not (options and options.lead_in == false) then
-                local qn = api.TimeMap2_timeToQN(project, first_note)
-                local _, bar = api.TimeMap_QNToMeasures(project, qn + EPS)
-                if math.abs(qn - bar) < 1e-7 then
-                    local _, previous = api.TimeMap_QNToMeasures(project, bar - 1e-6)
-                    left = math.min(left, math.max(api.TimeMap2_timeToQN(project, 0), previous))
-                end
-            end
-            left, right = region_bounds.limit(api, project, regions, start, finish, left, right, mode)
-            if mode == 'end' then left = api.TimeMap2_timeToQN(project, start) end
-            if mode == 'start' then right = api.TimeMap2_timeToQN(project, finish) end
+            left, right = resolve_edges(api, project, regions, target.takes, start, finish, mode, options)
             target.left, target.right = left, right
             local new_start = api.TimeMap2_QNToTime(project, left)
             local new_end = api.TimeMap2_QNToTime(project, right)

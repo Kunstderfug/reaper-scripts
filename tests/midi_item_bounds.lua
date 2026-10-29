@@ -245,6 +245,8 @@ end
 api, project, items = fixture()
 items[1].start, items[1].finish = 4.2, 11.5
 items[1].takes[1].origin, items[1].takes[1].length = 4.2, 7.3
+items[1].takes[1].events[#items[1].takes[1].events + 1] = { 10.5, string.char(144, 62, 100) }
+items[1].takes[1].events[#items[1].takes[1].events + 1] = { 11.3, string.char(128, 62, 0) }
 items[2].finish, items[2].takes[1].length = 11.5, 3.5
 api.CountProjectMarkers = function() return 1 end
 api.EnumProjectMarkers3 = function() return 1, true, 4.1, 11.5 end
@@ -274,4 +276,69 @@ for _, mode in ipairs({ 'both', 'start', 'end' }) do
     local _, after = api.MIDI_GetAllEvts(item.takes[1], '')
     assert(before == after and #bounds.plan(api, project, 'items', mode).targets == 0)
 end
-print('PASS: scopes, varying meter, regions, lead-in, modes, exclusions, rollback, and windowless selected-items action')
+-- Note duration, not stop time or late controllers, determines the final bar.
+local tail_cases = {
+    { finish = 8.072, note_end = 7.8, expected = 8 },
+    { finish = 12.1, note_end = 7.8, expected = 8 },
+    { finish = 8.072, note_end = 8, expected = 8 },
+    { finish = 8.072, note_end = 8.01, expected = 12 },
+    { finish = 7.7, note_end = 8.1, expected = 12 },
+}
+for _, case in ipairs(tail_cases) do
+    for _, scope in ipairs({ 'items', 'tracks', 'project' }) do
+        for _, mode in ipairs({ 'both', 'start', 'end' }) do
+            api, project, items = fixture()
+            local item = items[1]
+            item.finish, item.loop = case.finish, 0
+            item.takes[1].events = {
+                { 5.2, string.char(144, 60, 100) },
+                { case.note_end, string.char(128, 60, 0) },
+                { math.min(case.finish - .001, 11.9), string.char(176, 11, 60) },
+            }
+            local _, before = api.MIDI_GetAllEvts(item.takes[1], '')
+            plan = bounds.plan(api, project, scope, mode)
+            bounds.apply(api, project, plan)
+            near(item.start, mode == 'end' and 5 or 4)
+            near(item.finish, mode == 'start' and case.finish or case.expected)
+            local _, after = api.MIDI_GetAllEvts(item.takes[1], '')
+            assert(before == after)
+            assert(#bounds.plan(api, project, scope, mode).targets == 0)
+        end
+    end
+end
+-- Inactive takes retain their full note duration too.
+api, project, items = fixture()
+items[1].finish, items[1].loop = 12.1, 0
+items[1].takes[2] = { origin = 5, length = 7.1, rate = 1, events = {
+    { 6, string.char(144, 61, 100) }, { 10.2, string.char(128, 61, 0) },
+} }
+plan = bounds.plan(api, project, 'items', 'end')
+assert(bounds.apply(api, project, plan) == 1); near(items[1].finish, 12)
+-- Controller-only and incomplete-note takes retain the recording's enclosing bar.
+for _, message in ipairs({ string.char(176, 11, 100), string.char(144, 60, 100) }) do
+    api, project, items = fixture()
+    items[1].finish, items[1].loop = 11.9, 0
+    items[1].takes[1].events = { { 5.2, message } }
+    plan = bounds.plan(api, project, 'items', 'end')
+    assert(bounds.apply(api, project, plan) == 1); near(items[1].finish, 12)
+end
+-- Region clipping can hide the last note; resolve that earlier tail in one pass.
+api, project, items = fixture()
+local clipped = items[1]
+clipped.start, clipped.finish, clipped.loop = 14.199, 31.3, 0
+clipped.takes[1].events = {}
+for pitch, span in ipairs({ {14.046, 15.001}, {17.686, 18.352},
+    {22.935, 23.785}, {32.255, 35.353} }) do
+    clipped.takes[1].events[#clipped.takes[1].events + 1] = {span[1], string.char(144, 60 + pitch, 100)}
+    clipped.takes[1].events[#clipped.takes[1].events + 1] = {span[2], string.char(128, 60 + pitch, 0)}
+end
+local regions = { {31.976, 50.34}, {11.368, 22.483} }
+api.CountProjectMarkers = function() return #regions end
+api.EnumProjectMarkers3 = function(_, index)
+    return 1, true, regions[index + 1][1], regions[index + 1][2]
+end
+plan = bounds.plan(api, project, 'items', 'end')
+assert(bounds.apply(api, project, plan) == 1)
+near(clipped.start, 14.199); near(clipped.finish, 20)
+assert(#bounds.plan(api, project, 'items', 'end').targets == 0)
+print('PASS: scopes, regions, note-based tails, held notes, CC-only takes, modes, MIDI preservation, rollback and quick action')

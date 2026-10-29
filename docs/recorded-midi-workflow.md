@@ -42,10 +42,15 @@ multiple items](https://dlx.reaper.fm/userguide/html/).
 
 While enabled, stopping a recording waits 0.2 seconds for REAPER to finish, then:
 
-1. Expands the recorded MIDI item's start/end to enclosing barlines, respecting
+1. Aligns the recorded MIDI item's start/end to barlines, respecting
    the project's tempo and time signatures. Region starts and ends limit the
-   expansion even when they are between barlines. An edge already at a region
-   boundary stays there. Adds no extra lead-in bar. MIDI note timing stays unchanged.
+   expansion even when they are between barlines. Adds no extra lead-in bar.
+   MIDI note timing stays unchanged.
+   The right edge uses the latest note-off across all takes, rather than when
+   recording stopped: empty trailing bars are trimmed. Notes held across a
+   barline retain the next bar. Late CC/text events do not add empty bars.
+   Controller-only items and incomplete notes keep the original enclosing end
+   bar. Start-only mode leaves the right edge unchanged.
 2. In **Align + CC** mode only, optimizes detected continuous CC lanes using tolerance 4 and jitter/fade
    repair, with the same engine as `GPhil_optimizeProjectCC.lua`. Switch/data
    lanes (including sustain) are excluded by automatic detection.
@@ -80,4 +85,6 @@ Install the entry scripts and `lib/` dependencies together. Align + CC also
 requires `bin/rpp-curve-opt`.
 Tests: `lua tests/midi_record_watch.lua`, `lua tests/midi_record_finish.lua`,
 `lua tests/midi_record_toggle.lua`, `lua tests/midi_item_bounds.lua`, and
-`lua tests/cc_optimizer.lua`.
+`lua tests/cc_optimizer.lua`. Note-duration parsing is covered by
+`lua tests/midi_note_bounds.lua`, and region resolution by
+`lua tests/midi_region_bounds.lua`.

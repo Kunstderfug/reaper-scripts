@@ -64,7 +64,7 @@ function M.open(api, g)
                 s.mode = mode[1]; refresh()
             end
         end
-        ui.text(20, 271, 'Align to bars and regions; trim nearby region overhangs.', 15)
+        ui.text(20, 271, 'End at the last note\'s enclosing bar; respect region limits.', 15)
         ui.text(20, 301, 'Beat-one lead-in stays within the region and project start.', 13, 'muted')
         ui.text(20, 325, 'Notes, CCs and other MIDI events keep their exact timing.', 13, 'muted')
         ui.text(20, 349, 'Region trims can hide notes; repeating/shared sources are skipped.', 12, 'muted')

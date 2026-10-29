@@ -6,9 +6,13 @@ There are no instrument plug-ins; the notes are for visual alignment testing.
 
 Run `GPhil_quantizeMidiItemBounds_gfx.lua` from the Actions list. Choose selected
 MIDI items, selected tracks, or the whole project, then Start + end, Start only,
-or End only. Start/end adjustments expand the existing item edges outward.
+or End only. Start adjustment pads outward. End adjustment uses the latest
+note-off across all takes and rounds it up to a barline, trimming empty trailing
+bars rather than rounding the recording stop time up. A note held across the
+barline keeps the next bar. Late CCs/text do not add empty bars; controller-only
+items and incomplete notes retain the original enclosing end bar.
 Region starts and ends cap those expansions, including boundaries between
-barlines. Existing edges at region boundaries remain there. Overlapping/nested
+barlines. A right edge at a region end can still trim an empty note tail. Overlapping/nested
 regions use the nearest containing boundary for each edge. Nearby region
 overhangs trim inward when most of the item lies in that region and both edges
 fit within its boundary bars. Spans into adjacent regions and longer overhangs
