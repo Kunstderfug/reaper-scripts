@@ -266,3 +266,60 @@ Install the GFX entry point alongside the original action, plus
 `lib/cc_window.lua`, `lib/cc_widgets.lua`, `lib/cc_selection.lua`, and
 `lib/cc_verify.lua`, and `lib/cc_pin.lua`, retaining the existing optimizer
 modules and `bin/rpp-curve-opt` binary.
+
+### Automatically optimize after MIDI recording
+
+`GPhil_autoOptimizeRecordedCC_install.lua` registers the two actions, enables
+monitoring immediately, and adds an idempotent stanza to REAPER's
+`Scripts/__startup.lua`. Existing startup code (including Reaticulate) is retained;
+a timestamped `.gphil-backup-*` copy is written before changing it. Deploy the
+scripts, `lib/cc_*.lua` modules and optimizer binary to `Scripts/GPhil` first.
+
+Use **Script: GPhil_autoOptimizeRecordedCC_toggle.lua** in the Actions list or
+assign it to a toolbar/shortcut. Its toolbar state shows enabled/disabled. Off
+persists across REAPER launches. The separate `..._start.lua` action owns the
+background monitor, avoiding REAPER's already-running-script prompt on toggles.
+There is no window, console pop-up or manual action after each recording.
+
+The monitor processes CC **1, 3, 11, 13, 21, 22** at **tolerance 4**, with jitter
+and collided-fade repair. It waits for recording to stop and MIDI to stabilize
+(about 0.8 seconds), then applies changes in place with **one Undo step for the
+entire recording pass**. Ordinary playback stops do nothing. Recording that
+continues into playback waits until transport is fully stopped. Enabling the
+monitor midway through a recording skips that pass. Project switches cancel the
+pending pass. Projects are never auto-saved and SWS snapshots are never removed.
+
+Idle snapshots are refreshed at the first recording frame. Previously existing
+CC events are matched by source tick, channel, controller and value, regardless
+of selection. Only newly added runs of at least three target CC events are
+fitted; old CC anchors split runs and remain untouched, including their curve
+metadata. First-frame incoming CCs are conservatively protected too. Notes and
+all other MIDI events retain their timing, values, flags and order. Each run
+retains its boundary anchors and its final outgoing segment. New overdub takes
+also protect matching MIDI copied from earlier takes in the same item. Dense
+old CC points interleaved with a new overdub can therefore limit reduction.
+
+If an existing take's source mapping changes, that take is skipped. File-backed
+MIDI, ambiguous multiple-take pooling without SWS, or pools shared outside the
+recorded scope refuse the pass without edits. The shared verified transaction
+restores originals on apply failure; Undo is also available. This preserves
+surviving earlier MIDI; it does not reverse deletions caused by REAPER's own
+MIDI **replace** recording mode. The feature is intended for normal recording
+and MIDI overdub.
+
+Results/errors are appended to
+`REAPER/Data/GPhil/CC-after-recording.log`. `lib/cc_recording_watch.lua` owns
+transport transitions, `cc_recording_snapshot.lua` captures take identity and
+source mapping, `cc_recording_diff.lua` isolates and merges new CC runs, and
+`cc_recording_service.lua` owns lifecycle and fitting. Manual and automatic
+editing share `cc_transaction.lua` for readback verification and one-step Undo.
+
+Regression checks: `lua tests/cc_recording.lua`, `lua tests/cc_optimizer.lua`,
+`lua tests/cc_verify.lua`, `lua tests/cc_selection.lua`, and
+`lua tests/cc_recording_service.lua`. In REAPER,
+`tests/native_cc_recording.lua` proves a two-take transaction and exact Undo;
+`tests/native_cc_recording_transport.lua` creates a disposable project, records
+six CC lanes through the Virtual MIDI Keyboard in overdub mode, stops the real
+transport, checks the background result and Undo, then restores the previous
+project tab. The transport test turns the monitor off when finished; run the
+installer or toggle to enable it afterward.

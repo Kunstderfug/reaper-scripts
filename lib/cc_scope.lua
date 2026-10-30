@@ -36,6 +36,14 @@ function M.collect(api, project, scope, items)
     elseif scope == 'project' then
         for i = 0, api.CountMediaItems(project) - 1 do chosen[api.GetMediaItem(project, i)] = true end
     else error('Scope must be items, tracks, or project.') end
+    local entries = {}
+    for item in pairs(chosen) do
+        local take = api.GetActiveTake(item)
+        if take and api.TakeIsMIDI(take) then entries[#entries + 1] = { item=item, take=take } end
+    end
+    return M.from_takes(api, project, entries)
+end
+function M.from_takes(api, project, entries)
     local targets, wanted, pools = {}, {}, {}
     local function key(take)
         if api.BR_GetMidiTakePoolGUID then
@@ -53,8 +61,8 @@ function M.collect(api, project, scope, items)
         assert(api.CountTakes(item) == 1, 'Multiple-take MIDI requires SWS for safe pool inspection.')
         return chunk:match('POOLEDEVTS%s+({[^}]+})') or key(take)
     end
-    for item in pairs(chosen) do
-        local take = api.GetActiveTake(item)
+    for _, entry in ipairs(entries) do
+        local item, take = entry.item, entry.take
         if take and api.TakeIsMIDI(take) then
             local filename = api.GetMediaSourceFileName(api.GetMediaItemTake_Source(take), '')
             assert(filename == '', 'File-backed MIDI must be converted to in-project MIDI before optimization.')
