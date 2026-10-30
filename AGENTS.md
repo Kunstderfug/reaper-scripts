@@ -1,5 +1,6 @@
 # Project Instructions
 
+- Always use the currently running REAPER app for native checks and UI work. Do not start additional REAPER instances.
 - REAPER GPHIL scripts deploy to `/Users/slav/Library/Application Support/REAPER/Scripts/GPhil`.
 - After editing any `GPhil_*.lua` script in this repo, replace the matching file in that GPHIL folder with the edited version and verify the copy matches.
 - For `GPhil_tempoSet_render_gfx_direct.lua`, selected regions are a filter only when one or more regions are selected. If no regions are selected, render all regions.
