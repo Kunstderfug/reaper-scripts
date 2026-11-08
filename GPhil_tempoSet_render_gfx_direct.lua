@@ -1898,36 +1898,15 @@ main = function()
     local function require_original_project()
         if reaper.EnumProjects(-1, "") ~= proj then error("The active project changed; rendering stopped.", 0) end
     end
-    local function submit_render_pass(kind, label, pattern)
-        require_original_project()
-        if render_now then
-            local complete, reason = render_pass.run(reaper, proj, {
-                overwrite = not queue_options.skip_existing,
-                remove_file = os.remove
-            })
-            if not complete then
-                render_stop_reason = reason or "Rendering stopped."
-                error(render_stop_reason, 0)
-            end
-            require_original_project()
-            local _, output_directory = reaper.GetSetProjectInfo_String(proj, "RENDER_FILE", "", false)
-            local reviewed, checkpoint_reason = audio_checkpoint.review(reaper, {
-                enabled = queue_options.pause_audio_check,
-                project = proj,
-                kind = kind,
-                label = label,
-                pattern = pattern,
-                output_directory = output_directory
-            })
-            if not reviewed then
-                render_stop_reason = checkpoint_reason
-                error(render_stop_reason, 0)
-            end
-        else
-            reaper.Main_OnCommand(ADD_TO_QUEUE_CMD, 0)
+    local submit_render_pass = dofile((directory or "") .. "lib/render_submission.lua").new(reaper, proj, {
+        render_now = render_now, queue_options = queue_options,
+        render_pass = render_pass, audio_checkpoint = audio_checkpoint, remove_file = os.remove,
+        require_original_project = require_original_project, log = log, queue_command = ADD_TO_QUEUE_CMD,
+        stop = function(reason)
+            render_stop_reason = reason
+            error(reason, 0)
         end
-        require_original_project()
-    end
+    })
     local function prepare_existing_outputs(label, existing, skip_existing)
         if render_now then return true end -- Exact native targets are handled immediately before each pass.
         return delete_existing_outputs(label, existing, skip_existing)

@@ -108,7 +108,8 @@ local function run_case(options)
         equal(numeric.RENDER_BOUNDSFLAG, 5, "selected-region bounds")
         assert(regions[1].B_UISEL == 1 and regions[2].B_UISEL == 0, "only requested section is selected")
         local pass = { pattern = strings.RENDER_PATTERN, bpm = effective_bpm(regions[1].D_STARTPOS),
-            region_start = regions[1].D_STARTPOS, points = clone(points), tracks = clone(tracks) }
+            region_start = regions[1].D_STARTPOS, points = clone(points), tracks = clone(tracks),
+            delay = numeric.RENDER_DELAY, settings = numeric.RENDER_SETTINGS }
         passes[#passes + 1] = pass
         if command == 42230 then
             if options.render_error then error("injected render failure") end
@@ -366,6 +367,10 @@ local function run_case(options)
         local is_click = options.click and i == 1
         local regular_index = options.click and i - 1 or i
         local tempo = is_click and 120 or options.grid and 95 + 5 * regular_index or 90 + 10 * regular_index
+        if not is_click then
+            equal(pass.delay, 2, "music initialization delay in pass " .. i)
+            assert(pass.settings & (16 << 16) ~= 0, "initialization enabled for each music pass")
+        end
         equal(pass.bpm, tempo, "effective section tempo in pass " .. i)
         equal(pass.pattern, (is_click and "CLICKDATA/$project_$region_" or "AUDIO/$region/$project_$region_") .. tempo,
             "output pattern in pass " .. i)
