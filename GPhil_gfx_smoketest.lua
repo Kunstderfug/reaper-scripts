@@ -5,13 +5,14 @@
 local reaper = reaper
 ---@diagnostic disable-next-line: undefined-global
 local gfx = gfx
+local background_root = debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])') or './'
+local background = dofile(background_root .. 'lib/gfx_background.lua').new(gfx)
 
 gfx.init("GPhil GFX Smoke Test", 520, 180)
 gfx.setfont(1, "Arial", 20)
 
 local function loop()
-    gfx.set(0.1, 0.1, 0.12, 1)
-    gfx.rect(0, 0, gfx.w, gfx.h, 1)
+    background.draw()
     gfx.set(1, 1, 1, 1)
     gfx.x = 20
     gfx.y = 30
