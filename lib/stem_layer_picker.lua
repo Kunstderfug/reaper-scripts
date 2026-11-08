@@ -1,9 +1,12 @@
 -- Modeless GFX list shared by the renderer and the standalone track selector.
 local M = {}
+local here = assert(debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])'))
+local backgrounds = dofile(here .. 'gfx_background.lua')
 local section = 'GPHIL_STEM_LAYERS'
 
 function M.show(r, gfx, model, project, options, done)
     options = options or {}
+    local background = backgrounds.new(gfx)
     local rows = model.discover(r, project)
     local choices = model.picker_rows(rows)
     local selected = {}
@@ -35,8 +38,7 @@ function M.show(r, gfx, model, project, options, done)
         local active = r.EnumProjects(-1, '') == project
         local down = gfx.mouse_cap & 1 == 1
         local clicked = down and not held
-        gfx.set(0.10, 0.11, 0.13, 1)
-        gfx.rect(0, 0, gfx.w, gfx.h, true)
+        background.draw()
         gfx.setfont(1, 'Arial', 17)
         gfx.set(0.94, 0.94, 0.94, 1)
         text(18, 16, 'Choose layers to render')

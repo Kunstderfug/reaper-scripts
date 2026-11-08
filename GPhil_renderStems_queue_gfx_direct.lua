@@ -7,6 +7,7 @@ local reaper                 = reaper
 local gfx                    = gfx
 
 local script_directory = debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])') or './'
+local background = dofile(script_directory .. 'lib/gfx_background.lua').new(gfx)
 local stem_layers = dofile(script_directory .. 'lib/stem_layers.lua')
 local layer_picker = dofile(script_directory .. 'lib/stem_layer_picker.lua')
 local render_project = reaper.EnumProjects(-1, '')
@@ -1380,8 +1381,7 @@ local function prompt_per_region_settings(
         if reaper.EnumProjects(-1, '') ~= proj then
             local key = gfx.getchar()
             if key < 0 or key == 27 then gfx.quit(); return end
-            gfx.set(0.10, 0.11, 0.13, 1)
-            gfx.rect(0, 0, gfx.w, gfx.h, true)
+            background.draw()
             gfx.set(0.94, 0.94, 0.94, 1)
             gfx.x, gfx.y = 18, 18
             gfx.drawstr('Return to the original project tab to continue.')
@@ -1391,8 +1391,7 @@ local function prompt_per_region_settings(
         end
         local w = gfx.w
         local h = gfx.h
-        gfx.set(0.1, 0.1, 0.12, 1)
-        gfx.rect(0, 0, w, h, 1)
+        background.draw()
 
         local top_y = 12
         local btn_h = 32

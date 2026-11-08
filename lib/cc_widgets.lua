@@ -1,6 +1,9 @@
 -- Small immediate-mode GFX drawing helpers. Coordinates use a 660 x 530 canvas.
 local M = {}
+local here = assert(debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])'))
+local backgrounds = dofile(here .. 'gfx_background.lua')
 function M.new(g)
+    local background = backgrounds.new(g)
     local ui = { scale = 1, click = false, previous = false }
     local colors = {
         bg = { .055, .065, .085 }, panel = { .085, .10, .13 },
@@ -53,7 +56,7 @@ function M.new(g)
         if ui.scale <= 0 then ui.scale = 1 end
         local down = g.mouse_cap & 1 ~= 0
         ui.click = down and not ui.previous; ui.previous = down
-        ui.rect(0, 0, g.w / ui.scale, g.h / ui.scale, 'bg')
+        background.draw()
     end
     return ui
 end

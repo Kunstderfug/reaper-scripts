@@ -6,6 +6,7 @@
 local r = reaper
 local directory = debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])')
 local model = dofile(directory .. 'lib/reverb_ambience.lua')
+local background = dofile(directory .. 'lib/gfx_background.lua').new(gfx)
 local ambience = model.new(r)
 local project = r.EnumProjects(-1, '')
 local ok, result = pcall(ambience.setup, project)
@@ -34,8 +35,7 @@ end
 local function frame()
     local key = gfx.getchar()
     if key < 0 or key == 27 then gfx.quit(); return end
-    gfx.set(0.10, 0.11, 0.13, 1)
-    gfx.rect(0, 0, gfx.w, gfx.h, true)
+    background.draw()
     gfx.setfont(1, 'Arial', 17)
     gfx.set(0.94, 0.94, 0.94, 1)
     local active = r.EnumProjects(-1, '') == project

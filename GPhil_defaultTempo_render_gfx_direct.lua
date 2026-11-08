@@ -5,6 +5,8 @@
 local reaper                              = reaper
 ---@diagnostic disable-next-line: undefined-global
 local gfx                                 = gfx
+local background_root = debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])') or './'
+local background = dofile(background_root .. 'lib/gfx_background.lua').new(gfx)
 
 local RENDER_CURRENT_PROJECT_CMD          = 42230 -- File: Render project, using the most recent render settings, auto-close render dialog
 
@@ -846,8 +848,7 @@ local function prompt_per_region_settings(
     local function ui_loop()
         local w = gfx.w
         local h = gfx.h
-        gfx.set(0.1, 0.1, 0.12, 1)
-        gfx.rect(0, 0, w, h, 1)
+        background.draw()
 
         local top_y = 12
         local btn_h = 32

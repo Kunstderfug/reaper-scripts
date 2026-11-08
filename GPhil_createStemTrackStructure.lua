@@ -9,6 +9,8 @@
 local reaper = reaper
 ---@diagnostic disable-next-line: undefined-global
 local gfx = gfx
+local background_root = debug.getinfo(1, 'S').source:sub(2):match('^(.*[/\\])') or './'
+local background = dofile(background_root .. 'lib/gfx_background.lua').new(gfx)
 
 local EXT_SECTION = "GPhilCreateStemTrackStructure"
 local SCRIPT_TITLE = "Create Stem Track Structure"
@@ -963,8 +965,7 @@ local function show_stem_picker()
     end
 
     local function loop()
-        gfx.set(0.1, 0.1, 0.12, 1)
-        gfx.rect(0, 0, gfx.w, gfx.h, 1)
+        background.draw()
 
         gfx.set(1, 1, 1, 1)
         gfx.x = 16
