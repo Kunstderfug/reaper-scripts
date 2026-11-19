@@ -448,9 +448,13 @@ function staging.swap(api, entries, manifest)
         if not ok then
             local errors = undo()
             local text = "Could not swap in " .. entry.rel .. ": " .. tostring(message)
-                .. ". The pass was rolled back; the old outputs are in place."
-            if #errors > 0 then text = text .. " Rollback problems: " .. table.concat(errors, "; ") end
-            return false, text
+            if #errors > 0 then
+                text = text .. ". Rollback was incomplete; inspect the staging and previous folders. Rollback problems: "
+                    .. table.concat(errors, "; ")
+            else
+                text = text .. ". The pass was rolled back; the old outputs are in place."
+            end
+            return false, text, #errors > 0
         end
     end
     return true
@@ -585,7 +589,7 @@ function M.render(api, request, report)
 
     local state = { completed = 0, outputs = {}, declined = false, context_error = nil }
     local work_dirs, run_dir, stage_dir, previous_dir, previous_used, staged_kept = {}
-    local stop_reason
+    local stop_reason, rollback_incomplete
 
     local function require_context()
         local active, active_path = api.EnumProjects(-1, "")
@@ -671,6 +675,7 @@ function M.render(api, request, report)
             -- The GFX script's per-pass sequence for one music group.
             tempo_map.restore(proj, original_map)
             local live = locate(pass.rows)
+            -- Scope intentionally limits new base markers to the requested rows.
             for _, row in ipairs(pass.rows) do
                 tempo_map.ensure(proj, row.pos, row.base_tempo * multiplier, true)
             end
@@ -743,11 +748,16 @@ function M.render(api, request, report)
 
             emit({ state = "replacing", pass = pass_index, passes = #passes, label = label,
                 message = "Replacing the old files for " .. label .. "." })
-            local swapped, swap_error = staging.swap(api, entries, manifest)
-            if not swapped then error(swap_error, 0) end
-            staged_kept = false
+            local swapped, swap_error, incomplete = staging.swap(api, entries, manifest)
             for _, entry in ipairs(entries) do
                 if entry.backed_up then previous_used = true end
+            end
+            if not swapped then
+                rollback_incomplete = incomplete
+                error(swap_error, 0)
+            end
+            staged_kept = false
+            for _, entry in ipairs(entries) do
                 state.outputs[#state.outputs + 1] = entry.rel
             end
             state.completed = pass_index
@@ -768,7 +778,9 @@ function M.render(api, request, report)
         if state.completed > 0 then
             message = message .. string.format(" Pass(es) already replaced: %d.", state.completed)
         end
-        message = message .. " Old outputs for the stopped pass were not changed."
+        if not rollback_incomplete then
+            message = message .. " Old outputs for the stopped pass were not changed."
+        end
     end
     return result_table(final_state, message, {
         passes_completed = state.completed, passes = #passes, outputs = state.outputs,

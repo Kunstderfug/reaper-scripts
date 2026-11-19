@@ -620,6 +620,32 @@ do
     assert_restored(w, result)
 end
 
+-- A failed rollback reports uncertainty and the backup location truthfully.
+do
+    local w = world({ format2 = true })
+    write(audio_path(w, "EXPO_1", 100), "old EXPO 100")
+    write(audio_path(w, "EXPO_1", 100, "wav"), "old EXPO 100 wav")
+    local calls = 0
+    single._fs.rename = function(from, to)
+        calls = calls + 1
+        if calls == 3 or calls == 5 then return nil, "injected move failure" end
+        return real_fs.rename(from, to)
+    end
+    local plan = plan_of(w)
+    local req = request(w, plan, { scope = "region", region = find_region(plan, "EXPO_1").id })
+    local result = render(w, req)
+    single._fs.rename = real_fs.rename
+    equal(result.state, "failed", "incomplete rollback fails")
+    assert(result.message:find("Rollback was incomplete", 1, true), result.message)
+    assert(not result.message:find("old outputs are in place", 1, true), result.message)
+    assert(not result.message:find("Old outputs for the stopped pass were not changed", 1, true), result.message)
+    local previous = w.dir .. "/.gphildeck-rerender/" .. req.run .. "/previous"
+    equal(result.previous_dir, previous, "incomplete rollback reports backup directory")
+    equal(read(previous .. "/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.flac"), "old EXPO 100", "stranded old file located")
+    equal(read(audio_path(w, "EXPO_1", 100)), nil, "canonical file could not be restored")
+    assert_restored(w, result)
+end
+
 -- Context changes mid-run stop the run and keep old outputs.
 do
     local changes = {
