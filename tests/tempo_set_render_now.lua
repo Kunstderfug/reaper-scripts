@@ -4,7 +4,11 @@ local path = "GPhil_tempoSet_render_gfx_direct.lua"
 local source_file = assert(io.open(path))
 local source = source_file:read("*a")
 source_file:close()
-local section = assert(source:match('local EXT_SECTION%s*=%s*"([^"]+)"'))
+-- Constants and render-setting keys shared with GPhilDeck live in the plan library.
+local plan_file = assert(io.open("lib/tempo_set_plan.lua"))
+local plan_source = plan_file:read("*a")
+plan_file:close()
+local section = assert(plan_source:match('M%.EXT_SECTION%s*=%s*"([^"]+)"'))
 local regular_preset = "_RS67c8ada3573313a7c135385939c19cbc2450964d"
 local click_preset = "_RSe07780b8d7eb28a48e88b3b7e3467d7c79cade66"
 
@@ -72,7 +76,9 @@ local function run_case(options)
     end
     local dispatched_options, deferred = nil, {}
     local numeric, strings = {}, {}
-    for key in source:gmatch('"(RENDER_[A-Z0-9_]+)"') do numeric[key] = #key + 0.125 end
+    for _, text in ipairs({ source, plan_source }) do
+        for key in text:gmatch('"(RENDER_[A-Z0-9_]+)"') do numeric[key] = #key + 0.125 end
+    end
     for _, key in ipairs({ "RENDER_FILE", "RENDER_PATTERN", "RENDER_EXTRAFILEDIR", "RENDER_FORMAT", "RENDER_FORMAT2" }) do
         numeric[key], strings[key] = nil, "original-" .. key
     end
