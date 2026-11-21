@@ -24,7 +24,7 @@ function M.start(api)
         end
     end)
     local allowed = {version=true, session=true, expires=true, command=true, project=true,
-        open_project=true, output=true, region=true, grid_only=true}
+        open_project=true, output=true, region=true, grid_only=true, saved_only=true}
     local function process(file, id)
         local ok, result = xpcall(function()
             local request = p.parse(p.read(file))

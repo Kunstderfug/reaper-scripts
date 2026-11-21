@@ -1,0 +1,729 @@
+{
+  "_id": "7eabdbb3-cd8c-4006-b046-80114dd48dfa",
+  "_rev": "860DpU5gaa9bsqDlokLF5l",
+  "_type": "score",
+  "changelog": null,
+  "movements": [
+    {
+      "_key": "f46f5f16ed47",
+      "index": 1,
+      "sections": [
+        {
+          "_key": "ed55544a34e8",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 72,
+          "name": "INTRO",
+          "tempoRange": null
+        },
+        {
+          "_key": "a0a6372d96c4cb3d5ac0878d6b702802",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 1,
+          "defaultSectionLength": null,
+          "defaultTempo": 72,
+          "name": "EXPO_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "c2b4d70dc0da3ba807d439ed9ae0c393",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 72,
+          "name": "EXPO_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "f6aed1056422c4179d377ce6a8e9c95b",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 72,
+          "name": "EXPO_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "1c4c7da5667b1ac88cdfb2dd2eeaa1c7",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 72,
+          "name": "EXPO_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "ece39b45401f09a8a07acef493a9b91b",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 110,
+          "name": "EXPO_5",
+          "tempoRange": null
+        },
+        {
+          "_key": "198a37eb949341a1b7e1d99e0af0e7f0",
+          "autoContinue": true,
+          "autoContinueMarker": 20.474,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 26.848,
+          "defaultTempo": 75,
+          "name": "EXPO_6",
+          "tempoRange": null
+        },
+        {
+          "_key": "19a17733a730d95c5507fef1fedf2df2",
+          "autoContinue": true,
+          "autoContinueMarker": 42.768,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 45.102,
+          "defaultTempo": 52,
+          "name": "EXPO_7",
+          "tempoRange": null
+        },
+        {
+          "_key": "31538b3c91eeb640a24964bb0f5fca25",
+          "autoContinue": true,
+          "autoContinueMarker": 19.861,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 23.925,
+          "defaultTempo": 55,
+          "name": "EXPO_8",
+          "tempoRange": null
+        },
+        {
+          "_key": "dd73ca9710f59b48b605ad4d056350f1",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 75,
+          "name": "EXPO_9",
+          "tempoRange": null
+        },
+        {
+          "_key": "d393263ddf1cc308fd3265eae8828857",
+          "autoContinue": true,
+          "autoContinueMarker": 33.854,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 39.777,
+          "defaultTempo": 120,
+          "name": "EXPO_10",
+          "tempoRange": null
+        },
+        {
+          "_key": "ddf78f4e921c",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 80,
+          "name": "DEV_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "9ff5965930e083b1ed73d37da2d2c460",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 80,
+          "name": "DEV_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "3b0c5606745af5cd6dc6b4fda4e55454",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 90,
+          "name": "DEV_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "9259bfaf1e82712e70b234a6eb9b14bf",
+          "autoContinue": true,
+          "autoContinueMarker": 39.151,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 41.658,
+          "defaultTempo": 72,
+          "name": "RECAP_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "cb6592fcb9988af33fd9f867ffe0c1f5",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 110,
+          "name": "RECAP_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "75a2e8c1e3e80ef4159a0d393dbaa7c6",
+          "autoContinue": true,
+          "autoContinueMarker": 21.21,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 26.414,
+          "defaultTempo": 75,
+          "name": "RECAP_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "c9077b1bf1b8a67f03b0e20a9326135a",
+          "autoContinue": true,
+          "autoContinueMarker": 42.408,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 47.223,
+          "defaultTempo": 52,
+          "name": "RECAP_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "a174a8d952ad5c42c097b75ca3e6fc11",
+          "autoContinue": true,
+          "autoContinueMarker": 20.451,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 26.685,
+          "defaultTempo": 55,
+          "name": "RECAP_5",
+          "tempoRange": null
+        },
+        {
+          "_key": "160fb0adf68178cef2b1025d91957d6c",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": null,
+          "beatsPerBar": null,
+          "defaultSectionLength": null,
+          "defaultTempo": 75,
+          "name": "RECAP_6",
+          "tempoRange": null
+        },
+        {
+          "_key": "2ac98e8e47e6dab85b42fc1e98c992e8",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 95,
+          "name": "RECAP_7",
+          "tempoRange": null
+        },
+        {
+          "_key": "c0def257975b",
+          "autoContinue": true,
+          "autoContinueMarker": 22.25,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": 24.401,
+          "defaultTempo": 45,
+          "name": "CODA_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "43300250113134d56d22196e32041628",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 100,
+          "name": "CODA_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "902a9ebf8ed426b62cc6746ae47e5773",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 100,
+          "name": "CODA_3",
+          "tempoRange": null
+        }
+      ],
+      "title": "I. Allegro molto moderato"
+    },
+    {
+      "_key": "9c3c40bc88b1",
+      "index": 2,
+      "sections": [
+        {
+          "_key": "ae3f43c1c407",
+          "autoContinue": true,
+          "autoContinueMarker": 133.177,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": 143.628,
+          "defaultTempo": 40,
+          "name": "EXPO_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "9397457c693caf8608c1e8c3d5d5fa92",
+          "autoContinue": true,
+          "autoContinueMarker": 23.382,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": 29.581,
+          "defaultTempo": 36,
+          "name": "EXPO_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "274f5a720bd3594e854659ad2268e157",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": null,
+          "defaultTempo": 40,
+          "name": "EXPO_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "eb77d28d9be87a72e0e6d805411dbc04",
+          "autoContinue": true,
+          "autoContinueMarker": 30.29,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": 34.284,
+          "defaultTempo": 40,
+          "name": "EXPO_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "25f8a5cf25892ce15d13ded37f9566d4",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": null,
+          "defaultTempo": 40,
+          "name": "EXPO_5",
+          "tempoRange": null
+        },
+        {
+          "_key": "0d8b491ca0d1081c0f1f84f29dbf6330",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": null,
+          "defaultTempo": 48,
+          "name": "DEV",
+          "tempoRange": null
+        },
+        {
+          "_key": "9b90821897e52862f01b1168f4691457",
+          "autoContinue": true,
+          "autoContinueMarker": 30.433,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": 36.375,
+          "defaultTempo": 48,
+          "name": "RECAP_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "d2390aec25409d9ce43be7f68b21cf27",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": null,
+          "defaultTempo": 44,
+          "name": "RECAP_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "5055cc2c88d61167f72471b64c2c1b3a",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 2,
+          "beatsPerBar": 3,
+          "defaultSectionLength": null,
+          "defaultTempo": 40,
+          "name": "RECAP_3",
+          "tempoRange": null
+        }
+      ],
+      "title": "II. Adagio"
+    },
+    {
+      "_key": "22dd382027bd",
+      "index": 3,
+      "sections": [
+        {
+          "_key": "fe36ef2357e5",
+          "autoContinue": true,
+          "autoContinueMarker": 6.268,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 8.111,
+          "defaultTempo": 108,
+          "name": "INTRO_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "cce9d3df2b9cdc1ac7ce402def5a2ea4",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 98,
+          "name": "INTRO_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "436c3ff1af56887c00079aa13b1dee2a",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "INTRO_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "3c09019544376b99d3941431fdc2bd76",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "EXPO_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "d216a6fe11d9f902ae66e6d9cfeb2230",
+          "autoContinue": null,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "EXPO_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "24e108a546f14aa73fc18c37fa504990",
+          "autoContinue": true,
+          "autoContinueMarker": 8.223,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 10.644,
+          "defaultTempo": 108,
+          "name": "EXPO_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "6b68a2179eafa5bdfc463aa3a076a91a",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "EXPO_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "1adee38aa4bcfada4d7b499cb598ebf7",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "EXPO_5",
+          "tempoRange": null
+        },
+        {
+          "_key": "8b844a0f6e3ac79583c5b9327b3149ba",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "EXPO_6",
+          "tempoRange": null
+        },
+        {
+          "_key": "feb2014cb5fc56789567f1e7bfba6465",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 98,
+          "name": "EXPO_7",
+          "tempoRange": null
+        },
+        {
+          "_key": "770739723a55726fc922f50b00ddc772",
+          "autoContinue": true,
+          "autoContinueMarker": 12.365,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 17.683,
+          "defaultTempo": 118,
+          "name": "EXPO_8",
+          "tempoRange": null
+        },
+        {
+          "_key": "161b0656f0e5048b6c943d118b9b1ca9",
+          "autoContinue": true,
+          "autoContinueMarker": 37.651,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 41.189,
+          "defaultTempo": 82,
+          "name": "EP_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "3905681d12cdc77a7a837907de6afbc6",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 82,
+          "name": "EP_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "8b74366c6e1acb0be60e31616718c68a",
+          "autoContinue": true,
+          "autoContinueMarker": 28.613,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 32.927,
+          "defaultTempo": 82,
+          "name": "EP_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "0f1e89ef5db4861d53e02e6603832d3f",
+          "autoContinue": true,
+          "autoContinueMarker": 24.6,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 26.704,
+          "defaultTempo": 82,
+          "name": "EP_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "6187d708d072dc3044d5f21f843063a4",
+          "autoContinue": true,
+          "autoContinueMarker": 43.532,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 46.812,
+          "defaultTempo": 82,
+          "name": "EP_5",
+          "tempoRange": null
+        },
+        {
+          "_key": "1d8ef049d26e8a47da028fecfc31d061",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "RECAP_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "15ef4cc6daab5afaa16500a0b244f6de",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "RECAP_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "b58d59dd3aea557e3c8cf5d4f6dd9022",
+          "autoContinue": true,
+          "autoContinueMarker": 8.776,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 12.555,
+          "defaultTempo": 108,
+          "name": "RECAP_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "e3af14a00fbd360ddf4dde43cdfcbccb",
+          "autoContinue": true,
+          "autoContinueMarker": 16.091,
+          "beatLength": 4,
+          "beatsPerBar": 3,
+          "defaultSectionLength": 18.111,
+          "defaultTempo": 108,
+          "name": "RECAP_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "93c16653d705ebf362f611d0ff17f48d",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "RECAP_5",
+          "tempoRange": null
+        },
+        {
+          "_key": "9cd57aae8e7eeaa9da1e12adbe01619a",
+          "autoContinue": true,
+          "autoContinueMarker": 18.23,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": 21.444,
+          "defaultTempo": 108,
+          "name": "RECAP_6",
+          "tempoRange": null
+        },
+        {
+          "_key": "ff51716da569873ef1e9ab89e76311c9",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 78,
+          "name": "RECAP_7",
+          "tempoRange": null
+        },
+        {
+          "_key": "7b4527179243b28c8821688a5609176c",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 108,
+          "name": "RECAP_8",
+          "tempoRange": null
+        },
+        {
+          "_key": "e1787346ccee7c8d90bb0070d12e5377",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 2,
+          "defaultSectionLength": null,
+          "defaultTempo": 98,
+          "name": "RECAP_9",
+          "tempoRange": null
+        },
+        {
+          "_key": "74ed779bcb4234ff75695c9bd8d84de5",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 12,
+          "beatsPerBar": 1,
+          "defaultSectionLength": null,
+          "defaultTempo": 80,
+          "name": "CODA_1",
+          "tempoRange": null
+        },
+        {
+          "_key": "3e250b926ec8982195c241cc78751b0b",
+          "autoContinue": true,
+          "autoContinueMarker": 15.101,
+          "beatLength": 12,
+          "beatsPerBar": 1,
+          "defaultSectionLength": 17.757,
+          "defaultTempo": 80,
+          "name": "CODA_2",
+          "tempoRange": null
+        },
+        {
+          "_key": "119125080c17a69571f8734cdd68c780",
+          "autoContinue": true,
+          "autoContinueMarker": 25.422,
+          "beatLength": 12,
+          "beatsPerBar": 1,
+          "defaultSectionLength": 30.141,
+          "defaultTempo": 80,
+          "name": "CODA_3",
+          "tempoRange": null
+        },
+        {
+          "_key": "707431027fc813eb8578f7438f1bc67a",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 80,
+          "name": "CODA_4",
+          "tempoRange": null
+        },
+        {
+          "_key": "b189f14221d7156a90c6209d51e15a67",
+          "autoContinue": false,
+          "autoContinueMarker": null,
+          "beatLength": 4,
+          "beatsPerBar": 4,
+          "defaultSectionLength": null,
+          "defaultTempo": 80,
+          "name": "CODA_5",
+          "tempoRange": null
+        }
+      ],
+      "title": "III. Allegro moderato"
+    }
+  ],
+  "pathName": "GRIEG",
+  "private": null,
+  "slug": {
+    "_type": "slug",
+    "current": "grieg"
+  },
+  "title": "Grieg - Concerto"
+}

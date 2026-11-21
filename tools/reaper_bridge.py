@@ -39,6 +39,25 @@ def request(mailbox, command, fields, timeout):
     raise RuntimeError(f'Bridge request timed out ({identifier}); an export already running may still finish. Check output before retrying.')
 
 
+def verify_saved_only(result, project):
+    """Defense in depth: a saved-only receipt must prove an exact, clean, unchanged saved tab."""
+    receipt = result.get('result') or {}
+    problems = []
+    if receipt.get('savedOnly') is not True:
+        problems.append('bridge did not honour saved_only (older bridge loaded? restart the bridge)')
+    if receipt.get('project') != project:
+        problems.append(f"receipt project {receipt.get('project')!r} != {project!r}")
+    if receipt.get('dirtyBefore') is not False or receipt.get('dirtyAfter') is not False:
+        problems.append('project tab was dirty')
+    before, after = receipt.get('stateChangeCountBefore'), receipt.get('stateChangeCountAfter')
+    if before is None or before != after:
+        problems.append(f'project state change count {before!r} -> {after!r}')
+    if not receipt.get('exporterVersion'):
+        problems.append('missing exporterVersion')
+    if problems:
+        raise RuntimeError('Saved-only receipt rejected: ' + '; '.join(problems))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mailbox', type=Path, default=DEFAULT_MAILBOX)
@@ -51,6 +70,8 @@ def main():
     export.add_argument('--open-project', action='store_true', help='Open a saved RPP in an own temporary tab if needed')
     export.add_argument('--region', help='Exact region name; omit to export all regions')
     export.add_argument('--output', type=Path, required=True, help='Parent output directory; each request gets a unique subfolder')
+    export.add_argument('--saved-only', action='store_true',
+                        help='Require --project to be an exact, clean (saved) tab that stays unchanged during export')
     export.add_argument('--grid-only', action='store_true', help='Explicitly ignore custom metronome patterns; never infer authored exceptions')
     args = parser.parse_args()
     if not 1 <= args.timeout <= 300:
@@ -59,6 +80,8 @@ def main():
     if args.command == 'export-clicks':
         if args.open_project and not args.project:
             parser.error('--open-project requires --project')
+        if args.saved_only and not args.project:
+            parser.error('--saved-only requires --project')
         output = args.output.expanduser().resolve()
         output.mkdir(parents=True, exist_ok=True)
         fields = dict(output=str(output), open_project=int(args.open_project), grid_only=int(args.grid_only))
@@ -66,8 +89,13 @@ def main():
             fields['project'] = str(args.project.expanduser().resolve())
         if args.region:
             fields['region'] = args.region
+        if args.saved_only:
+            # Sent only when requested so callers without the flag keep working with older loaded bridges.
+            fields['saved_only'] = 1
     try:
         result = request(args.mailbox, args.command, fields, args.timeout)
+        if args.command == 'export-clicks' and args.saved_only and result.get('ok'):
+            verify_saved_only(result, fields['project'])
         print(json.dumps(result, indent=2))
         return 0 if result['ok'] else 1
     except (OSError, ValueError, KeyError, RuntimeError) as error:

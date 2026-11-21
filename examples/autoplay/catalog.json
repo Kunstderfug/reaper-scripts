@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "description": "Real source inventories. Preparation never approves musical decisions or publishes assets.",
+  "works": [
+    {
+      "name": "Tchaikovsky Piano Concerto No. 1",
+      "snapshot": "evidence/TCHAIKOVSKY_1.sanity.json",
+      "kind": "production-example",
+      "movements": [
+        {"index": 1, "source": "TCHAIKOVSKY_1/TCHAIKOVSKY_1_1/TCHAIKOVSKY_1_1.RPP"},
+        {"index": 2, "source": "TCHAIKOVSKY_1/TCHAIKOVSKY_1_2/TCHAIKOVSKY_1_2.RPP"},
+        {"index": 3, "source": "TCHAIKOVSKY_1/TCHAIKOVSKY_1_3/TCHAIKOVSKY_1_3.RPP"}
+      ]
+    },
+    {
+      "name": "Rachmaninoff Piano Concerto No. 1",
+      "snapshot": "evidence/RACHMANINOFF_1.sanity.json",
+      "kind": "production-example",
+      "movements": [
+        {"index": 1, "source": "RACHMANINOFF_1/RACHMANINOFF_1_1/RACHMANINOFF_1_1.RPP"},
+        {"index": 2, "source": "RACHMANINOFF_1/RACHMANINOFF_1_2/RACHMANINOFF_1_2.RPP"},
+        {"index": 3, "source": "RACHMANINOFF_1/RACHMANINOFF_1_3/RACHMANINOFF_1_3.RPP"}
+      ]
+    },
+    {
+      "name": "Beethoven Piano Concerto No. 1",
+      "snapshot": "evidence/BEETHOVEN_1.sanity.json",
+      "kind": "production-example",
+      "movements": [
+        {"index": 1, "source": "BEETHOVEN_1/Beethoven_1_1/BEETHOVEN_1_1.RPP"},
+        {"index": 2, "source": "BEETHOVEN_1/Beethoven_1_2/BEETHOVEN_1_2.RPP"},
+        {"index": 3, "source": "BEETHOVEN_1/Beethoven_1_3/BEETHOVEN_1_3.RPP"}
+      ]
+    },
+    {
+      "name": "Beethoven Piano Concerto No. 3",
+      "snapshot": "evidence/BEETHOVEN_3.sanity.json",
+      "kind": "production-example",
+      "movements": [
+        {"index": 1, "source": "BEETHOVEN_3/BEETHOVEN_3_1/BEETHOVEN_3_1.RPP"},
+        {"index": 2, "source": "BEETHOVEN_3/BEETHOVEN_3_2/BEETHOVEN_3_2.RPP"}
+      ]
+    },
+    {
+      "name": "Grieg Piano Concerto: legacy recovery stress case",
+      "snapshot": "evidence/GRIEG.sanity.json",
+      "kind": "legacy-conflict-example",
+      "movements": [
+        {"index": 1, "source": "GRIEG_A/GRIEG_1/GRIEG_1.RPP"},
+        {"index": 2, "source": "GRIEG_A/GRIEG_2/GRIEG_2.RPP"},
+        {"index": 3, "source": "GRIEG_A/GRIEG_3/GRIEG_3.RPP"}
+      ]
+    }
+  ]
+}

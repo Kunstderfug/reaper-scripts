@@ -1,0 +1,487 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GPhil AUTOPLAY movement manifest",
+  "type": "object",
+  "required": [
+    "version",
+    "project_root",
+    "source_path",
+    "template_path",
+    "sanity_snapshot_path",
+    "movement_key",
+    "sanity",
+    "fingerprints",
+    "source_tempo_points",
+    "source_meter_anchors",
+    "sections"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "project_root": {
+      "type": "string"
+    },
+    "source_path": {
+      "type": "string"
+    },
+    "template_path": {
+      "type": "string"
+    },
+    "sanity_snapshot_path": {
+      "type": "string"
+    },
+    "movement_key": {
+      "type": "string"
+    },
+    "sanity": {
+      "type": "object",
+      "required": [
+        "score_id",
+        "revision",
+        "movement_key",
+        "movement_index",
+        "path_name",
+        "slug"
+      ]
+    },
+    "fingerprints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      }
+    },
+    "source_tempo_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "time",
+          "bpm",
+          "shape"
+        ],
+        "properties": {
+          "time": {
+            "type": "number",
+            "minimum": 0
+          },
+          "bpm": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "shape": {
+            "enum": [
+              0,
+              1
+            ]
+          }
+        }
+      }
+    },
+    "source_meter_anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "time",
+          "numerator",
+          "denominator"
+        ]
+      }
+    },
+    "partial_measure_decision": {
+      "$ref": "#/$defs/decision"
+    },
+    "sections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/section"
+      }
+    },
+    "source_timing_issues": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "field",
+          "line",
+          "raw",
+          "message"
+        ],
+        "properties": {
+          "field": {
+            "const": "source_tempo_points"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "raw": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "raw_source_timing": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "source_timing_override": {
+      "type": "object",
+      "description": "Full reviewed replacement in source seconds. Both lists start at zero and increase through the source region bounds. Every meter anchor requires a tempo point at the same time.",
+      "required": [
+        "points",
+        "meter_anchors",
+        "approved"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "points": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "time",
+              "bpm",
+              "shape"
+            ],
+            "properties": {
+              "time": {
+                "type": "number",
+                "minimum": 0
+              },
+              "bpm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "shape": {
+                "type": "integer",
+                "enum": [
+                  0,
+                  1
+                ]
+              }
+            }
+          }
+        },
+        "meter_anchors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "time",
+              "numerator",
+              "denominator"
+            ],
+            "properties": {
+              "time": {
+                "type": "number",
+                "minimum": 0
+              },
+              "numerator": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "denominator": {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2,
+                  4,
+                  8,
+                  16,
+                  32,
+                  64
+                ]
+              },
+              "reset": {
+                "type": "boolean",
+                "description": "Encode a native partial-measure reset. True requires an approved partial_measure_decision with reset policy."
+              }
+            }
+          }
+        },
+        "approved": {
+          "type": "boolean"
+        },
+        "reviewer": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "timing_review_sha256(manifest) for the reviewed grid, source and evidence."
+        }
+      },
+      "if": {
+        "properties": {
+          "approved": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "reviewer",
+          "evidence",
+          "approved_sha256"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "decision": {
+      "type": "object",
+      "properties": {
+        "approved": {
+          "type": "boolean"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "handoff_basis": {
+          "enum": [
+            "render",
+            "source"
+          ]
+        },
+        "source_to_render_scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "audio_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "section": {
+      "type": "object",
+      "required": [
+        "key",
+        "source_region_id",
+        "name",
+        "region_name",
+        "storage_path",
+        "scale",
+        "decision",
+        "sanity",
+        "source_start_seconds",
+        "source_end_seconds",
+        "audio_path",
+        "opus_path",
+        "comparison"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "region_name": {
+          "type": "string"
+        },
+        "storage_path": {
+          "type": "string"
+        },
+        "source_region_id": {
+          "type": "string"
+        },
+        "source_start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "source_end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "scale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "sanity": {
+          "type": "object"
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        },
+        "audio_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opus_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handoff_seconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "comparison": {
+          "type": "object",
+          "required": [
+            "time_scale",
+            "offset_ms",
+            "tolerance_ms"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "time_scale": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "exclusiveMaximum": 100
+            },
+            "offset_ms": {
+              "type": "number"
+            },
+            "tolerance_ms": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 20
+            },
+            "approved_discrepancy_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "approval_note": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "fermatas": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/decision"
+              },
+              {
+                "required": [
+                  "source_seconds",
+                  "source_end_seconds",
+                  "window"
+                ],
+                "properties": {
+                  "duration_beats": {
+                    "type": "number",
+                    "minimum": 1
+                  },
+                  "window": {
+                    "enum": [
+                      "verified_solo",
+                      "verified_silent",
+                      "compatible_render",
+                      "new_render"
+                    ]
+                  },
+                  "duration_seconds": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "oneOf": [
+                  {
+                    "required": [
+                      "duration_seconds"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "duration_beats"
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        "overlap_owner": {
+          "type": "string"
+        },
+        "manual_gap_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "incoming_preparation_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "ownership_offset_seconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "if": {
+    "required": [
+      "source_timing_issues"
+    ]
+  },
+  "then": {
+    "required": [
+      "raw_source_timing"
+    ],
+    "properties": {
+      "source_tempo_points": {
+        "maxItems": 0
+      },
+      "source_meter_anchors": {
+        "maxItems": 0
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "source_tempo_points": {
+        "minItems": 1
+      },
+      "source_meter_anchors": {
+        "minItems": 1
+      }
+    },
+    "not": {
+      "required": [
+        "raw_source_timing"
+      ]
+    }
+  },
+  "dependentRequired": {
+    "source_timing_override": [
+      "source_timing_issues",
+      "raw_source_timing"
+    ]
+  }
+}
