@@ -4,9 +4,12 @@
 -- Data-only: the REAPER API and the file operations are passed in.
 --
 -- Manifest lines (tab separated): "created <time>", "stage <rel>", "previous <rel>"
--- and, written last and only by a fully successful run, "done <time>".
+-- and, written last, one final marker: "done <time>" after a fully successful run,
+-- or "discardable <time>" after a stopped run that left nothing in previous/
+-- (no file was backed up, or every backup was moved back into place).
 -- A "previous" line is written BEFORE the old file is moved, so an interrupted
--- or failed run never hides a recovery copy. Only runs carrying "done" are pruned.
+-- or failed run never hides a recovery copy. Only runs whose LAST manifest line
+-- is a marker are pruned; a run never reuses an existing run folder.
 local M = {}
 
 local function slash(path)
@@ -52,9 +55,28 @@ function M.new(fs)
         return written and closed and true or nil
     end
 
-    -- Creates the run folder and its manifest once. Returns true, or nil + message.
-    function S.create(api, run_dir, manifest, now)
+    -- True when anything already exists at run_dir (folder, manifest or contents).
+    function S.exists(api, run_dir, manifest)
         if api.file_exists(manifest) then return true end
+        if fs.exists and fs.exists(run_dir) then return true end
+        for _, enumerate in ipairs({ api.EnumerateFiles, api.EnumerateSubdirectories }) do
+            if enumerate then
+                pcall(enumerate, run_dir, -1)
+                local called, name = pcall(enumerate, run_dir, 0)
+                if called and name then return true end
+            end
+        end
+        return false
+    end
+
+    -- Creates a NEW run folder and its manifest. An existing folder (for example
+    -- the same run arriving again) is refused: its manifest could carry an old
+    -- marker. Call once per run folder. Returns true, or nil + message.
+    function S.create(api, run_dir, manifest, now)
+        if S.exists(api, run_dir, manifest) then
+            return nil, "A re-render folder for this run already exists, so nothing was rendered or moved: "
+                .. run_dir .. ". Start a new re-render from GPhilDeck."
+        end
         api.RecursiveCreateDirectory(run_dir, 0)
         if not write_line(manifest, "w", "created", tostring(now)) then
             return nil, "Could not create the re-render folder " .. run_dir
@@ -139,10 +161,17 @@ function M.new(fs)
         return names
     end
 
-    -- Keeps the newest `keep` other finished runs; deletes only manifest-listed files.
-    -- Runs without a "done" line (failed, canceled, interrupted, rollback incomplete,
-    -- or made before the marker existed) may hold the only copy of an old output,
-    -- so they are never pruned.
+    -- The run's final marker ("done" or "discardable"), only when it is the
+    -- manifest's last line and that line is complete; nil otherwise.
+    function S.marker(text)
+        local last = ("\n" .. text):match("\n([^\n]*)\n$")
+        return last and (last:match("^(done)\t%d+$") or last:match("^(discardable)\t%d+$")) or nil
+    end
+
+    -- Keeps the newest `keep` other marked runs; deletes only manifest-listed files.
+    -- Unmarked runs (interrupted, rollback incomplete, stopped with a backup left
+    -- in previous/, a line after the marker, or made before markers existed) may
+    -- hold the only copy of an old output, so they are never pruned.
     function S.prune(api, work, current_run, keep)
         local runs = {}
         for _, name in ipairs(list_subdirectories(api, work)) do
@@ -152,7 +181,7 @@ function M.new(fs)
                 if file then
                     local text = file:read("a") or ""
                     file:close()
-                    if ("\n" .. text):find("\ndone\t") then
+                    if S.marker(text) then
                         runs[#runs + 1] = { name = name, manifest = manifest, text = text,
                             created = tonumber(text:match("^created\t(%d+)")) or 0 }
                     end

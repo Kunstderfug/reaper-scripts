@@ -24,7 +24,13 @@ M._fs = {
     rename = function(from, to) return os.rename(from, to) end,
     remove = function(path) return os.remove(path) end,
     open = function(path, mode) return io.open(path, mode) end,
-    time = function() return os.time() end
+    time = function() return os.time() end,
+    -- Renaming a path onto itself changes nothing; it fails with ENOENT (2) only
+    -- when nothing is there. Any other failure counts as existing (refuse safely).
+    exists = function(path)
+        local ok, _, code = os.rename(path, path)
+        return ok == true or code ~= 2
+    end
 }
 local staging = staging_lib.new(M._fs)
 local slash = staging_lib.slash
@@ -77,9 +83,50 @@ local function new_plan(status, message)
     }
 end
 
--- Output file names come from $region: compare names as stored, ignoring case.
+-- Lowercase for one code point: ASCII, Latin-1 Supplement, Latin Extended-A and
+-- basic Greek and Cyrillic. Other code points are returned unchanged.
+local function fold_code(c)
+    if c < 0x80 then
+        return (c >= 0x41 and c <= 0x5A) and c + 0x20 or c
+    elseif c >= 0xC0 and c <= 0xDE and c ~= 0xD7 then
+        return c + 0x20
+    elseif c >= 0x100 and c <= 0x17F then
+        if c == 0x178 then return 0xFF end -- Ÿ
+        if c == 0x17F then return 0x73 end -- long s folds to s
+        if c == 0x130 or c == 0x131 or c == 0x138 or c == 0x149 then return c end
+        local odd_upper = (c >= 0x139 and c <= 0x148) or (c >= 0x179 and c <= 0x17E)
+        if odd_upper then return c % 2 == 1 and c + 1 or c end
+        return c % 2 == 0 and c + 1 or c
+    elseif c >= 0x386 and c <= 0x3AB then
+        if c == 0x386 then return 0x3AC end
+        if c >= 0x388 and c <= 0x38A then return c + 0x25 end
+        if c == 0x38C then return 0x3CC end
+        if c == 0x38E or c == 0x38F then return c + 0x3F end
+        if c >= 0x391 and c ~= 0x3A2 then return c + 0x20 end
+        return c
+    elseif c == 0x3C2 then
+        return 0x3C3 -- final sigma folds to sigma
+    elseif c >= 0x400 and c <= 0x40F then
+        return c + 0x50
+    elseif c >= 0x410 and c <= 0x42F then
+        return c + 0x20
+    end
+    return c
+end
+
+-- Folds case in UTF-8 text; bytes that are not valid UTF-8 are kept as they are.
+local function fold_case(text)
+    return (text:gsub(utf8.charpattern, function(piece)
+        if utf8.len(piece) ~= 1 then return piece:lower() end
+        return utf8.char(fold_code(utf8.codepoint(piece)))
+    end))
+end
+M._fold_case = fold_case
+
+-- Output file names come from $region and may land on a case-insensitive volume
+-- (macOS): compare names as stored, ignoring case, including accented letters.
 local function output_name(name)
-    return plan_lib.sanitize_name_for_storage(name):lower()
+    return fold_case(plan_lib.sanitize_name_for_storage(name))
 end
 
 -- A tempo with up to six decimals and no trailing zeros, e.g. "100.000001".
@@ -95,9 +142,11 @@ end
 -- that actually render it. A target the multiplier merges into another tempo's
 -- pass takes that pass's key (the GFX script renders it there). Targets at or
 -- below 0 BPM, and several passes sharing one file suffix, are left out.
+-- Eligibility is per pass (row.allowed[group]), never per public key: passes
+-- with different file suffixes can share one rounded key.
 local function assign_targets(plan, row, multiplier, group_by_music_key)
     local _, own = plan_lib.build_per_region_queue_groups({ setmetatable({}, { __index = row }) }, multiplier)
-    local order, group_of_key, groups_of_suffix, suffixes = {}, {}, {}, {}
+    local order, seen_group, groups_of_suffix, suffixes = {}, {}, {}, {}
     local nonpositive, merged = false, {}
     for _, step in ipairs(own) do
         local group = group_by_music_key[plan_lib.music_group_key(step.base_actual, step.target_actual, step.tempo_display)]
@@ -109,9 +158,9 @@ local function assign_targets(plan, row, multiplier, group_by_music_key)
             if group.key ~= tempo_key(step.target_tempo) then
                 merged[#merged + 1] = bpm_text(step.target_tempo) .. " is rendered as " .. bpm_text(group.target_tempo)
             end
-            if not group_of_key[group.key] then
-                group_of_key[group.key] = group
-                order[#order + 1] = group.key
+            if not seen_group[group] then
+                seen_group[group] = true
+                order[#order + 1] = group
             end
             local suffix = group.tempo_display
             if not groups_of_suffix[suffix] then
@@ -142,10 +191,14 @@ local function assign_targets(plan, row, multiplier, group_by_music_key)
         end
     end
     row.allowed = {}
-    for _, key in ipairs(order) do
-        if not removed[group_of_key[key].tempo_display] then
-            row.public.targets[#row.public.targets + 1] = key
-            row.allowed[key] = true
+    local listed = {}
+    for _, group in ipairs(order) do
+        if not removed[group.tempo_display] then
+            row.allowed[group] = true
+            if not listed[group.key] then
+                listed[group.key] = true
+                row.public.targets[#row.public.targets + 1] = group.key
+            end
         end
     end
 end
@@ -311,13 +364,14 @@ local function build(api)
         row.notes = nil
     end
 
-    -- Each pass keeps the rows allowed at its key, so plan.tempos and every
-    -- region's targets list exactly the same keys.
+    -- Each pass keeps only the rows allowed in that very pass, so plan.tempos and
+    -- every region's targets list exactly the same keys, and a press renders only
+    -- passes the plan marked eligible.
     local tempo_by_key = {}
     for _, group in ipairs(groups) do
         local key, kept, seen = group.key, {}, {}
         for _, row in ipairs(group.regions) do
-            if row.allowed and row.allowed[key] and not seen[row] then
+            if row.allowed and row.allowed[group] and not seen[row] then
                 seen[row] = true
                 kept[#kept + 1] = row
             end
@@ -405,6 +459,9 @@ local function check_request(api, request)
     end
     if request.replace ~= M.REPLACE_POLICY then
         return "Unknown replacement policy."
+    end
+    if type(request.run) ~= "string" or not request.run:match("^%x+$") then
+        return "The re-render run identifier is not valid."
     end
     return nil, plan
 end
@@ -555,6 +612,7 @@ function M.render(api, request, report)
     if api.atexit then api.atexit(function() cleanup.finish() end) end
 
     local state = { completed = 0, outputs = {}, declined = false, context_error = nil }
+    -- manifests: the run folders this render created (never a pre-existing one).
     local work_dirs, manifests, run_dir, stage_dir, previous_dir, previous_used, staged_kept = {}, {}
     local stop_reason, rollback_incomplete
 
@@ -679,13 +737,15 @@ function M.render(api, request, report)
             local rels, rel_error = staging.relative(root, canonical, M.WORK_FOLDER)
             if not rels then error(rel_error, 0) end
             local work = slash(root):gsub("/+$", "") .. "/" .. M.WORK_FOLDER
-            work_dirs[work] = true
             run_dir = work .. "/" .. request.run
             stage_dir, previous_dir = run_dir .. "/stage", run_dir .. "/previous"
             local manifest = run_dir .. "/manifest.txt"
-            local created, create_error = staging.create(api, run_dir, manifest, M._fs.time())
-            if not created then error(create_error, 0) end
-            manifests[manifest] = true
+            if not manifests[manifest] then
+                local created, create_error = staging.create(api, run_dir, manifest, M._fs.time())
+                if not created then error(create_error, 0) end
+                manifests[manifest] = true
+                work_dirs[work] = true
+            end
             api.GetSetProjectInfo_String(proj, "RENDER_FILE", stage_dir, true)
             local _, staged_text = api.GetSetProjectInfo_String(proj, "RENDER_TARGETS", "", false)
             local staged = split_targets(staged_text)
@@ -732,10 +792,16 @@ function M.render(api, request, report)
     local restore_errors = cleanup.finish()
     pcall(verify_render_state, api, proj, original_render, restore_errors)
     local final_state, message
-    if ok then
-        -- Only a finished run may be pruned later; then prune older finished runs.
-        for manifest in pairs(manifests) do pcall(staging.manifest, manifest, "done", tostring(M._fs.time())) end
+    -- Mark the run prunable with one final line: "done" when it finished, or
+    -- "discardable" when it stopped with nothing left in previous/ (no backup, or
+    -- every backup moved back). Otherwise it stays unmarked and is kept. Then
+    -- prune older marked runs.
+    local marker = ok and "done" or ((not rollback_incomplete and not previous_used) and "discardable" or nil)
+    if marker then
+        for manifest in pairs(manifests) do pcall(staging.manifest, manifest, marker, tostring(M._fs.time())) end
         for work in pairs(work_dirs) do pcall(staging.prune, api, work, request.run, M.KEEP_OTHER_RUNS) end
+    end
+    if ok then
         final_state = "completed"
         message = string.format("Re-rendered %s: %d file(s) replaced. This is not an audio-quality verdict.",
             tempo.label, #state.outputs)
