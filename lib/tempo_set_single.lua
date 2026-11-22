@@ -4,13 +4,14 @@
 -- No GFX window, prompts or dialogs, except the existing audio checkpoint.
 -- Planning, per-pass setup and rendering reuse the GFX Tempo Set code:
 -- tempo_set_plan, tempo_set_project, tempo_map, render_pass, render_submission,
--- audio_checkpoint and render_session.
+-- audio_checkpoint and render_session. Staged replacement lives in tempo_set_staging.
 local directory = debug.getinfo(1, "S").source:sub(2):match("^(.*[/\\])") or "./"
 local plan_lib = dofile(directory .. "tempo_set_plan.lua")
 local render_session = dofile(directory .. "render_session.lua")
 local render_pass = dofile(directory .. "render_pass.lua")
 local render_submission = dofile(directory .. "render_submission.lua")
 local audio_checkpoint = dofile(directory .. "audio_checkpoint.lua")
+local staging_lib = dofile(directory .. "tempo_set_staging.lua")
 
 local M = {}
 M.CONTRACT = 1
@@ -25,6 +26,8 @@ M._fs = {
     open = function(path, mode) return io.open(path, mode) end,
     time = function() return os.time() end
 }
+local staging = staging_lib.new(M._fs)
+local slash = staging_lib.slash
 
 local CHECKPOINT_TITLE_LABEL = "GPhilDeck re-render"
 
@@ -72,6 +75,79 @@ local function new_plan(status, message)
         project = { name = "", id = "" }, revision = "", multiplier = 1,
         audio_check = true, preset_ready = false, regions = {}, tempos = {}, issues = {}
     }
+end
+
+-- Output file names come from $region: compare names as stored, ignoring case.
+local function output_name(name)
+    return plan_lib.sanitize_name_for_storage(name):lower()
+end
+
+-- A tempo with up to six decimals and no trailing zeros, e.g. "100.000001".
+local function bpm_text(tempo)
+    return (string.format("%.6f", round6(tempo)):gsub("0+$", ""):gsub("%.$", ""))
+end
+
+local function key_micro(key)
+    return tonumber(tostring(key):match("^t(%-?%d+)$"))
+end
+
+-- One usable row's targets, in its own planned order, as the keys of the passes
+-- that actually render it. A target the multiplier merges into another tempo's
+-- pass takes that pass's key (the GFX script renders it there). Targets at or
+-- below 0 BPM, and several passes sharing one file suffix, are left out.
+local function assign_targets(plan, row, multiplier, group_by_music_key)
+    local _, own = plan_lib.build_per_region_queue_groups({ setmetatable({}, { __index = row }) }, multiplier)
+    local order, group_of_key, groups_of_suffix, suffixes = {}, {}, {}, {}
+    local nonpositive, merged = false, {}
+    for _, step in ipairs(own) do
+        local group = group_by_music_key[plan_lib.music_group_key(step.base_actual, step.target_actual, step.tempo_display)]
+        if not group then
+            error("A planned tempo has no render pass.", 0) -- the builder ran over this row; cannot happen
+        elseif step.target_tempo <= 0 or group.target_tempo <= 0 or key_micro(group.key) <= 0 then
+            nonpositive = true
+        else
+            if group.key ~= tempo_key(step.target_tempo) then
+                merged[#merged + 1] = bpm_text(step.target_tempo) .. " is rendered as " .. bpm_text(group.target_tempo)
+            end
+            if not group_of_key[group.key] then
+                group_of_key[group.key] = group
+                order[#order + 1] = group.key
+            end
+            local suffix = group.tempo_display
+            if not groups_of_suffix[suffix] then
+                groups_of_suffix[suffix] = {}
+                suffixes[#suffixes + 1] = suffix
+            end
+            groups_of_suffix[suffix][group] = true
+        end
+    end
+    if nonpositive then
+        row.notes[#row.notes + 1] = "Tempos at or below 0 BPM are not planned."
+        plan.issues[#plan.issues + 1] = string.format(
+            "Region %s has saved tempos at or below 0 BPM; those tempos were left out.", row.name)
+    end
+    if #merged > 0 then
+        plan.issues[#plan.issues + 1] = string.format(
+            "Region %s: with the tempo multiplier, %s, because they are the same tempo.", row.name, table.concat(merged, ", "))
+    end
+    local removed = {}
+    for _, suffix in ipairs(suffixes) do
+        local count = 0
+        for _ in pairs(groups_of_suffix[suffix]) do count = count + 1 end
+        if count > 1 then
+            removed[suffix] = true
+            plan.issues[#plan.issues + 1] = string.format(
+                "Region %s has several tempos that round to the same file suffix %s; those tempos were left out.",
+                row.name, suffix)
+        end
+    end
+    row.allowed = {}
+    for _, key in ipairs(order) do
+        if not removed[group_of_key[key].tempo_display] then
+            row.public.targets[#row.public.targets + 1] = key
+            row.allowed[key] = true
+        end
+    end
 end
 
 -- Builds the public plan and the internal rows/groups render needs.
@@ -163,10 +239,11 @@ local function build(api)
         return plan
     end
 
+    -- $region names the output files, so count every current region, saved or not.
     local name_count = {}
-    for _, entry in ipairs(matched) do
-        local lower = entry.region.name:lower()
-        name_count[lower] = (name_count[lower] or 0) + 1
+    for _, region in ipairs(regions) do
+        local name = output_name(region.name)
+        name_count[name] = (name_count[name] or 0) + 1
     end
 
     local revision_parts = {
@@ -207,61 +284,46 @@ local function build(api)
             usable = false
             notes[#notes + 1] = "Not planned: " .. reason .. "."
             plan.issues[#plan.issues + 1] = string.format("Region %s has invalid saved settings (%s); it was left out.", row.name, reason)
-        elseif name_count[row.name:lower()] > 1 then
+        elseif name_count[output_name(row.name)] > 1 then
             usable = false
             notes[#notes + 1] = "Another region has the same name, so their output files would collide."
             plan.issues[#plan.issues + 1] = string.format("Regions named %s share an output name; they were left out.", row.name)
         end
-        if #notes > 0 then public.note = table.concat(notes, " ") end
-        row.public = public
+        row.public, row.notes = public, notes
         plan.regions[#plan.regions + 1] = public
         internal.rows[#internal.rows + 1] = row
         internal.by_id[row.id] = row
-        if usable then
-            -- This row's own planned sequence, from the existing group builder.
-            local _, own = plan_lib.build_per_region_queue_groups({ setmetatable({}, { __index = row }) }, multiplier)
-            local by_suffix, keys = {}, {}
-            for _, group in ipairs(own) do
-                local key = tempo_key(group.target_tempo)
-                if not keys[key] then
-                    keys[key] = true
-                    by_suffix[group.tempo_display] = by_suffix[group.tempo_display] or {}
-                    table.insert(by_suffix[group.tempo_display], key)
-                    public.targets[#public.targets + 1] = key
-                end
-            end
-            local removed = {}
-            for suffix, list in pairs(by_suffix) do
-                if #list > 1 then
-                    for _, key in ipairs(list) do removed[key] = true end
-                    plan.issues[#plan.issues + 1] = string.format(
-                        "Region %s has several tempos that round to the same file suffix %s; those tempos were left out.",
-                        row.name, suffix)
-                end
-            end
-            local kept = {}
-            for _, key in ipairs(public.targets) do
-                if not removed[key] then kept[#kept + 1] = key end
-            end
-            public.targets = kept
-            row.allowed = {}
-            for _, key in ipairs(kept) do row.allowed[key] = true end
-            configs[#configs + 1] = row
-        end
+        if usable then configs[#configs + 1] = row end
     end
 
     -- The real scheduled passes, from the existing group builder over all usable rows.
     local _, groups = plan_lib.build_per_region_queue_groups(configs, multiplier)
+    local group_by_music_key = {}
+    for _, group in ipairs(groups) do
+        group.key = tempo_key(group.target_tempo)
+        group_by_music_key[plan_lib.music_group_key(group.base_actual, group.target_actual, group.tempo_display)] = group
+    end
+    for _, row in ipairs(configs) do
+        assign_targets(plan, row, multiplier, group_by_music_key)
+    end
+    for _, row in ipairs(internal.rows) do
+        if #row.notes > 0 then row.public.note = table.concat(row.notes, " ") end
+        row.notes = nil
+    end
+
+    -- Each pass keeps the rows allowed at its key, so plan.tempos and every
+    -- region's targets list exactly the same keys.
     local tempo_by_key = {}
     for _, group in ipairs(groups) do
-        local key = tempo_key(group.target_tempo)
-        local kept = {}
-        for _, cfg in ipairs(group.regions) do
-            local row = getmetatable(cfg) and getmetatable(cfg).__index or cfg
-            if row.allowed and row.allowed[key] then kept[#kept + 1] = row end
+        local key, kept, seen = group.key, {}, {}
+        for _, row in ipairs(group.regions) do
+            if row.allowed and row.allowed[key] and not seen[row] then
+                seen[row] = true
+                kept[#kept + 1] = row
+            end
         end
         if #kept > 0 then
-            group.key, group.rows = key, kept
+            group.rows = kept
             internal.groups[#internal.groups + 1] = group
             local entry = tempo_by_key[key]
             if not entry then
@@ -319,8 +381,10 @@ local function check_request(api, request)
     if request.revision ~= plan.revision then
         return "The Tempo Set plan changed in REAPER. Reload the plan and try again."
     end
+    local micro = key_micro(request.tempo)
+    if micro and micro <= 0 then return "Tempos must be greater than 0 BPM." end
     local tempo = find_by(plan.tempos, "key", request.tempo)
-    if not tempo then return "That tempo is no longer in the saved plan." end
+    if not tempo or not (tempo.tempo > 0) then return "That tempo is no longer in the saved plan." end
     if request.scope == "region" then
         local listed = false
         for _, id in ipairs(tempo.regions) do listed = listed or id == request.region end
@@ -371,148 +435,50 @@ local function scoped_passes(plan, request)
     return passes, tempo
 end
 
-local function slash(path)
-    return (path:gsub("\\", "/"))
-end
-
-local function parent(path)
-    return path:match("^(.*)[/\\][^/\\]+$")
-end
-
 local function split_targets(text)
     local list = {}
     for part in (text or ""):gmatch("[^;]+") do list[#list + 1] = part end
     return list
 end
 
-local staging = {}
-
--- Relative tails of every target under root; nil + message when any target is outside it.
-function staging.relative(root, targets)
-    local prefix = slash(root):gsub("/+$", "") .. "/"
-    local rels, seen = {}, {}
-    for _, target in ipairs(targets) do
-        local normalized = slash(target)
-        if normalized:sub(1, #prefix) ~= prefix then
-            return nil, "A render output is outside the render folder: " .. target
-        end
-        local rel = normalized:sub(#prefix + 1)
-        if rel == "" or seen[rel] or rel:find("^%.gphildeck%-rerender/") then
-            return nil, "Render outputs are not unique: " .. target
-        end
-        seen[rel] = true
-        rels[#rels + 1] = rel
-    end
-    return rels
-end
-
-function staging.manifest(path, kind, rel)
-    local file = M._fs.open(path, "a")
-    if not file then error("Could not write the re-render manifest " .. path, 0) end
-    file:write(kind, "\t", rel, "\n")
-    file:close()
-end
-
--- Moves canonical files to previous/ and staged files into place; rolls back on failure.
-function staging.swap(api, entries, manifest)
-    local done = {}
-    local function undo()
-        local errors = {}
-        for i = #done, 1, -1 do
-            local step = done[i]
-            local ok, message = M._fs.rename(step.to, step.from)
-            if not ok then errors[#errors + 1] = tostring(message) end
-        end
-        return errors
-    end
-    for _, entry in ipairs(entries) do
-        local ok, message = true, nil
-        if api.file_exists(entry.canonical) then
-            if api.file_exists(entry.previous) then
-                ok, message = false, "A previous copy already exists: " .. entry.previous
-            else
-                api.RecursiveCreateDirectory(parent(entry.previous), 0)
-                ok, message = M._fs.rename(entry.canonical, entry.previous)
-                if ok then
-                    done[#done + 1] = { from = entry.canonical, to = entry.previous }
-                    staging.manifest(manifest, "previous", entry.rel)
-                    entry.backed_up = true
-                end
-            end
-        end
-        if ok then
-            api.RecursiveCreateDirectory(parent(entry.canonical), 0)
-            ok, message = M._fs.rename(entry.staged, entry.canonical)
-            if ok then done[#done + 1] = { from = entry.staged, to = entry.canonical } end
-        end
-        if not ok then
-            local errors = undo()
-            local text = "Could not swap in " .. entry.rel .. ": " .. tostring(message)
-            if #errors > 0 then
-                text = text .. ". Rollback was incomplete; inspect the staging and previous folders. Rollback problems: "
-                    .. table.concat(errors, "; ")
-            else
-                text = text .. ". The pass was rolled back; the old outputs are in place."
-            end
-            return false, text, #errors > 0
+-- The shared lookup finds one track whose lowercase name contains "clicktrack".
+-- Music passes also mute every track whose name, lowercased with everything but
+-- letters and digits removed, contains "clicktrack" (for example "CLICK TRACK").
+local function find_click_tracks(api, proj, shared)
+    local list = {}
+    for i = 0, api.CountTracks(proj) - 1 do
+        local track = api.GetTrack(proj, i)
+        local _, name = api.GetTrackName(track, "")
+        local compact = (tostring(name or ""):lower():gsub("[^%w]", ""))
+        if track == shared or compact:find("clicktrack", 1, true) then
+            list[#list + 1] = { track = track, mute = api.GetMediaTrackInfo_Value(track, "B_MUTE") }
         end
     end
-    return true
+    return list
 end
 
-local function list_subdirectories(api, path)
-    local names = {}
-    if not api.EnumerateSubdirectories then return names end
-    pcall(api.EnumerateSubdirectories, path, -1)
-    local i = 0
-    while true do
-        local name = api.EnumerateSubdirectories(path, i)
-        if not name then break end
-        names[#names + 1] = name
-        i = i + 1
+-- The shared restore ignores setter results; read every captured render setting
+-- back and add one restore error per setting that did not return.
+local function verify_render_state(api, proj, state, errors)
+    if not state then return end
+    local function mismatch(key)
+        errors[#errors + 1] = "render settings: " .. key .. " did not return to its original value."
     end
-    return names
-end
-
--- Keeps the newest KEEP_OTHER_RUNS other run folders; deletes only manifest-listed files.
-function staging.prune(api, work, current_run)
-    local runs = {}
-    for _, name in ipairs(list_subdirectories(api, work)) do
-        if name ~= current_run and name:match("^%x+$") then
-            local manifest = work .. "/" .. name .. "/manifest.txt"
-            local file = M._fs.open(manifest, "r")
-            if file then
-                local text = file:read("a") or ""
-                file:close()
-                runs[#runs + 1] = { name = name, manifest = manifest, text = text,
-                    created = tonumber(text:match("^created\t(%d+)")) or 0 }
+    for _, key in ipairs(plan_lib.RENDER_NUMERIC_KEYS) do
+        local want = state.numeric[key]
+        if want ~= nil then
+            local read_ok, got = pcall(api.GetSetProjectInfo, proj, key, 0, false)
+            if not read_ok or type(got) ~= "number" or math.abs(got - want) > 1e-9 * math.max(1, math.abs(want)) then
+                mismatch(key)
             end
         end
     end
-    table.sort(runs, function(a, b)
-        if a.created ~= b.created then return a.created > b.created end
-        return a.name > b.name
-    end)
-    for i = M.KEEP_OTHER_RUNS + 1, #runs do
-        local run = runs[i]
-        local base = work .. "/" .. run.name
-        local folders = {}
-        for kind, rel in run.text:gmatch("(%a+)\t([^\n]+)") do
-            if (kind == "stage" or kind == "previous") and not rel:find("%.%.") then
-                M._fs.remove(base .. "/" .. kind .. "/" .. rel)
-                local dir = parent(kind .. "/" .. rel)
-                while dir do
-                    folders[dir] = true
-                    dir = parent(dir)
-                end
-            end
+    for _, key in ipairs(plan_lib.RENDER_STRING_KEYS) do
+        local want = state.strings[key]
+        if want ~= nil then
+            local read_ok, found, got = pcall(api.GetSetProjectInfo_String, proj, key, "", false)
+            if not read_ok or not found or got ~= want then mismatch(key) end
         end
-        M._fs.remove(run.manifest)
-        local ordered = {}
-        for dir in pairs(folders) do ordered[#ordered + 1] = dir end
-        table.sort(ordered, function(a, b) return #a > #b end)
-        for _, dir in ipairs(ordered) do M._fs.remove(base .. "/" .. dir) end -- empty folders only
-        M._fs.remove(base)
     end
 end
 
@@ -546,9 +512,8 @@ function M.render(api, request, report)
         return result_table("rejected", "Nothing was rendered: " .. tostring(capture_error), { passes = #passes })
     end
 
-    local click_track = helpers.find_click_track(proj)
+    local click_tracks = find_click_tracks(api, proj, helpers.find_click_track(proj))
     local solo_track = helpers.find_solo_track(proj)
-    local original_click_mute = click_track and api.GetMediaTrackInfo_Value(click_track, "B_MUTE")
     local original_solo_mute = solo_track and api.GetMediaTrackInfo_Value(solo_track, "B_MUTE")
     local previous_tracks = {}
     for i = 0, api.CountTracks(proj) - 1 do
@@ -562,8 +527,10 @@ function M.render(api, request, report)
     cleanup.add("render settings", function() helpers.restore_render_state(proj, original_render) end)
     cleanup.add("region selection", function() helpers.restore_region_selection(proj, original_selection) end)
     cleanup.add("track mutes", function()
-        if click_track and original_click_mute ~= nil and api.ValidatePtr2(proj, click_track, "MediaTrack*") then
-            api.SetMediaTrackInfo_Value(click_track, "B_MUTE", original_click_mute)
+        for _, click in ipairs(click_tracks) do
+            if api.ValidatePtr2(proj, click.track, "MediaTrack*") then
+                api.SetMediaTrackInfo_Value(click.track, "B_MUTE", click.mute)
+            end
         end
         if solo_track and original_solo_mute ~= nil and api.ValidatePtr2(proj, solo_track, "MediaTrack*") then
             api.SetMediaTrackInfo_Value(solo_track, "B_MUTE", original_solo_mute)
@@ -588,7 +555,7 @@ function M.render(api, request, report)
     if api.atexit then api.atexit(function() cleanup.finish() end) end
 
     local state = { completed = 0, outputs = {}, declined = false, context_error = nil }
-    local work_dirs, run_dir, stage_dir, previous_dir, previous_used, staged_kept = {}
+    local work_dirs, manifests, run_dir, stage_dir, previous_dir, previous_used, staged_kept = {}, {}
     local stop_reason, rollback_incomplete
 
     local function require_context()
@@ -687,8 +654,8 @@ function M.render(api, request, report)
                 local live_start = api.GetRegionOrMarkerInfo_Value(proj, region, "D_STARTPOS")
                 tempo_map.ensure(proj, live_start, group.target_actual, true)
             end
-            if click_track and original_click_mute ~= nil then
-                api.SetMediaTrackInfo_Value(click_track, "B_MUTE", 1)
+            for _, click in ipairs(click_tracks) do
+                api.SetMediaTrackInfo_Value(click.track, "B_MUTE", 1)
             end
             helpers.restore_render_state(proj, original_render)
             local command = helpers.resolve_command(plan_lib.CMD_APPLY_GPHIL_RENDER)
@@ -709,24 +676,20 @@ function M.render(api, request, report)
             local _, canonical_text = api.GetSetProjectInfo_String(proj, "RENDER_TARGETS", "", false)
             local canonical = split_targets(canonical_text)
             if #canonical == 0 then error("No render output files were found; nothing was rendered.", 0) end
-            local rels, rel_error = staging.relative(root, canonical)
+            local rels, rel_error = staging.relative(root, canonical, M.WORK_FOLDER)
             if not rels then error(rel_error, 0) end
             local work = slash(root):gsub("/+$", "") .. "/" .. M.WORK_FOLDER
             work_dirs[work] = true
             run_dir = work .. "/" .. request.run
             stage_dir, previous_dir = run_dir .. "/stage", run_dir .. "/previous"
             local manifest = run_dir .. "/manifest.txt"
-            if not api.file_exists(manifest) then
-                api.RecursiveCreateDirectory(run_dir, 0)
-                local file = M._fs.open(manifest, "w")
-                if not file then error("Could not create the re-render folder " .. run_dir, 0) end
-                file:write("created\t", tostring(M._fs.time()), "\n")
-                file:close()
-            end
+            local created, create_error = staging.create(api, run_dir, manifest, M._fs.time())
+            if not created then error(create_error, 0) end
+            manifests[manifest] = true
             api.GetSetProjectInfo_String(proj, "RENDER_FILE", stage_dir, true)
             local _, staged_text = api.GetSetProjectInfo_String(proj, "RENDER_TARGETS", "", false)
             local staged = split_targets(staged_text)
-            local staged_rels, staged_error = staging.relative(stage_dir, staged)
+            local staged_rels, staged_error = staging.relative(stage_dir, staged, M.WORK_FOLDER)
             if not staged_rels or #staged_rels ~= #rels then
                 error(staged_error or "Staged outputs do not match the real outputs; nothing was rendered.", 0)
             end
@@ -740,7 +703,8 @@ function M.render(api, request, report)
                 end
                 entries[i] = { rel = rel, canonical = canonical[i], staged = staged[i],
                     previous = previous_dir .. "/" .. rel }
-                staging.manifest(manifest, "stage", rel)
+                local noted, note_error = staging.manifest(manifest, "stage", rel)
+                if not noted then error(note_error, 0) end
             end
 
             staged_kept = true
@@ -766,9 +730,12 @@ function M.render(api, request, report)
     end)
 
     local restore_errors = cleanup.finish()
+    pcall(verify_render_state, api, proj, original_render, restore_errors)
     local final_state, message
     if ok then
-        for work in pairs(work_dirs) do pcall(staging.prune, api, work, request.run) end
+        -- Only a finished run may be pruned later; then prune older finished runs.
+        for manifest in pairs(manifests) do pcall(staging.manifest, manifest, "done", tostring(M._fs.time())) end
+        for work in pairs(work_dirs) do pcall(staging.prune, api, work, request.run, M.KEEP_OTHER_RUNS) end
         final_state = "completed"
         message = string.format("Re-rendered %s: %d file(s) replaced. This is not an audio-quality verdict.",
             tempo.label, #state.outputs)

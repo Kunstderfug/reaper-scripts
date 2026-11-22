@@ -93,6 +93,7 @@ local function world(options)
         { name = "CLICKTRACK", B_MUTE = 0, selected = false },
         { name = "SOLO", B_MUTE = 0, selected = true }
     }
+    for _, track in ipairs(options.extra_tracks or {}) do w.tracks[#w.tracks + 1] = track end
     local r = w.regions
     w.ext = {
         saved_region_rows_v1 = options.blob or table.concat({
@@ -248,6 +249,7 @@ local function world(options)
             assert(value == "42230", "render through the native render action")
             return true, native_render()
         end
+        if set and options.ignore_set and options.ignore_set(w, key, value) then return false, "" end
         if set then w.strings[key] = value end
         return true, assert(w.strings[key], key)
     end
@@ -304,9 +306,13 @@ local function request(w, plan, overrides)
     end
     return result
 end
+local last_run = {}
+local function req_run(result) return last_run[result] end
 local function render(w, req)
     w.events = {}
-    return single.render(w.api, req, function(event) w.events[#w.events + 1] = clone(event) end)
+    local result = single.render(w.api, req, function(event) w.events[#w.events + 1] = clone(event) end)
+    last_run[result] = req.run
+    return result
 end
 local function audio_path(w, region, tempo, extension)
     return w.dir .. "/AUDIO/" .. region .. "/BEETHOVEN_3_1_" .. region .. "_" .. tempo .. "." .. (extension or "flac")
@@ -322,6 +328,42 @@ local function assert_restored(w, result)
     equal(w.ext, w.original.ext, "ExtState untouched")
     equal(w.project_bpm, w.original.bpm, "project tempo restored")
     equal(w.undo_begin, w.undo_end, "undo block closed")
+end
+-- Every region target is a planned tempo listing that region, and back.
+local function assert_consistent(plan, label)
+    local by_key, by_id = {}, {}
+    for _, region in ipairs(plan.regions) do by_id[region.id] = region end
+    for _, tempo in ipairs(plan.tempos) do
+        assert(not by_key[tempo.key], label .. ": duplicate tempo " .. tempo.key)
+        by_key[tempo.key] = tempo
+        assert(tonumber(tempo.key:sub(2)) > 0 and tempo.tempo > 0, label .. ": tempo above 0 " .. tempo.key)
+        assert(#tempo.regions > 0 and tempo.passes > 0, label .. ": tempo is used " .. tempo.key)
+        for _, id in ipairs(tempo.regions) do
+            assert(by_id[id] and find(by_id[id].targets, tempo.key), label .. ": region lists " .. tempo.key)
+        end
+    end
+    for _, region in ipairs(plan.regions) do
+        for _, key in ipairs(region.targets) do
+            assert(by_key[key] and find(by_key[key].regions, region.id), label .. ": " .. region.name .. " target " .. key)
+        end
+    end
+end
+-- Fails the nth manifest append with the given failure ("open" or "write").
+local function fail_append(n, how)
+    local count = 0
+    single._fs.open = function(path, mode)
+        if mode == "a" then
+            count = count + 1
+            if count == n then
+                if how == "open" then return nil, "injected open failure" end
+                return { write = function() return nil, "injected write failure" end, close = function() return true end }
+            end
+        end
+        return real_fs.open(path, mode)
+    end
+end
+local function manifest_text(w, run)
+    return read(w.dir .. "/.gphildeck-rerender/" .. run .. "/manifest.txt") or ""
 end
 local function snapshot(w)
     return clone({ regions = w.regions, points = w.points, tracks = w.tracks, numeric = w.numeric,
@@ -366,6 +408,7 @@ do
     equal({ t100.label, t100.suffix, t100.tempo }, { "100", "100", 100 }, "label and suffix")
     for _, region in ipairs(plan.regions) do assert(region.note == nil, "no note when bases agree") end
     assert(plan._internal == nil, "no internals in the public plan")
+    assert_consistent(plan, "basic plan")
 
     -- Each revision input changes it.
     local revision = plan.revision
@@ -453,6 +496,7 @@ do
         assert(issues:find(needle, 1, true), "issue: " .. needle .. "\n" .. issues)
     end
     for _, tempo in ipairs(plan.tempos) do assert(#tempo.regions > 0, "no empty tempo") end
+    assert_consistent(plan, "plan with exclusions")
 
     -- More than 10000 iterations is invalid.
     w.ext.saved_region_rows_v1 = row_line(regions[1], 120, 1, 0.001, 100)
@@ -617,6 +661,8 @@ do
     equal(read(audio_path(w, "EXPO_1", 100, "wav")), "old EXPO 100 wav", "wav untouched")
     assert(result.staged_dir and read(result.staged_dir .. "/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.flac"), "staged file back in place")
     equal(result.outputs, {}, "nothing replaced")
+    equal(result.previous_dir, nil, "a full rollback leaves nothing in previous/, so no previous dir")
+    assert(not manifest_text(w, req_run(result)):find("\ndone\t"), "a failed run is never marked done")
     assert_restored(w, result)
 end
 
@@ -680,8 +726,10 @@ end
 do
     local w = world({ audio_check = false })
     local work = w.dir .. "/.gphildeck-rerender/"
-    for i, name in ipairs({ "0001", "0002", "0003" }) do
-        write(work .. name .. "/manifest.txt", "created\t" .. (1000 + i) .. "\nstage\tAUDIO/X/a.flac\nprevious\tAUDIO/X/b.flac\n")
+    for i, name in ipairs({ "0000", "0001", "0002", "0003" }) do
+        -- 0000 has no done marker: an old, failed or interrupted run, never pruned.
+        write(work .. name .. "/manifest.txt", "created\t" .. (1000 + i) .. "\nstage\tAUDIO/X/a.flac\nprevious\tAUDIO/X/b.flac\n"
+            .. (name == "0000" and "" or "done\t" .. (1100 + i) .. "\n"))
         write(work .. name .. "/stage/AUDIO/X/a.flac", "a")
         write(work .. name .. "/previous/AUDIO/X/b.flac", "b")
     end
@@ -696,6 +744,9 @@ do
     equal(read(work .. "0002/stage/AUDIO/X/a.flac"), "a", "second newest kept")
     equal(read(work .. "0003/previous/AUDIO/X/b.flac"), "b", "newest kept")
     equal(read(work .. "notes/keep.txt"), "unrelated", "unrelated folder kept")
+    equal(read(work .. "0000/previous/AUDIO/X/b.flac"), "b", "run without a done marker is never pruned")
+    equal(read(work .. "0000/manifest.txt"):find("done", 1, true), nil, "unmarked manifest untouched")
+    assert(manifest_text(w, req_run(result)):find("\ndone\t%d+\n$"), "a completed run is marked done last")
 end
 
 -- The report callback can throw without breaking the render.
@@ -705,6 +756,189 @@ do
     local result = single.render(w.api, request(w, plan, { scope = "region", region = find_region(plan, "DEV_2").id }),
         function() error("report broke") end)
     equal(result.state, "completed", "report errors are contained")
+    assert_restored(w, result)
+end
+
+-- A: a manifest failure inside the swap rolls the pass back and says so truthfully.
+do
+    for _, case in ipairs({ { 4, "open", "after the first file moved" }, { 3, "write", "before any move" } }) do
+        local w = world({ format2 = true })
+        write(audio_path(w, "EXPO_1", 100), "old EXPO 100")
+        write(audio_path(w, "EXPO_1", 100, "wav"), "old EXPO 100 wav")
+        local plan = plan_of(w)
+        fail_append(case[1], case[2])
+        local result = render(w, request(w, plan, { scope = "region", region = find_region(plan, "EXPO_1").id }))
+        single._fs.open = real_fs.open
+        local label = "manifest " .. case[2] .. " failure " .. case[3]
+        equal(result.state, "failed", label)
+        assert(result.message:find("Could not write the re-render manifest", 1, true), label .. ": " .. result.message)
+        assert(result.message:find("rolled back", 1, true), label .. ": " .. result.message)
+        equal(read(audio_path(w, "EXPO_1", 100)), "old EXPO 100", label .. ": flac in place")
+        equal(read(audio_path(w, "EXPO_1", 100, "wav")), "old EXPO 100 wav", label .. ": wav in place")
+        equal(result.previous_dir, nil, label .. ": nothing left in previous/")
+        assert(result.staged_dir and read(result.staged_dir .. "/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.flac"), label .. ": staged kept")
+        assert_restored(w, result)
+    end
+
+    -- An unexpected error during a move is contained and rolled back too.
+    local w = world({ format2 = true })
+    write(audio_path(w, "EXPO_1", 100), "old EXPO 100")
+    write(audio_path(w, "EXPO_1", 100, "wav"), "old EXPO 100 wav")
+    local calls = 0
+    single._fs.rename = function(from, to)
+        calls = calls + 1
+        if calls == 3 then error("injected crash") end
+        return real_fs.rename(from, to)
+    end
+    local plan = plan_of(w)
+    local result = render(w, request(w, plan, { scope = "region", region = find_region(plan, "EXPO_1").id }))
+    single._fs.rename = real_fs.rename
+    equal(result.state, "failed", "raised move fails")
+    assert(result.message:find("injected crash", 1, true) and result.message:find("rolled back", 1, true), result.message)
+    equal(read(audio_path(w, "EXPO_1", 100)), "old EXPO 100", "raised move: flac rolled back")
+    equal(result.previous_dir, nil, "raised move: nothing left in previous/")
+    assert_restored(w, result)
+
+    -- A later pass failing after an earlier pass replaced files still reports previous/.
+    w = world({ audio_check = false })
+    write(audio_path(w, "EXPO_1", 100), "old EXPO 100")
+    write(audio_path(w, "DEV_2", 100), "old DEV 100")
+    plan = plan_of(w)
+    local req = request(w, plan)
+    fail_append(4, "open") -- stage EXPO, previous EXPO, stage DEV, previous DEV
+    result = render(w, req)
+    single._fs.open = real_fs.open
+    equal({ result.state, result.passes_completed }, { "failed", 1 }, "second pass manifest failure")
+    equal(read(audio_path(w, "DEV_2", 100)), "old DEV 100", "second pass old output in place")
+    local previous = w.dir .. "/.gphildeck-rerender/" .. req.run .. "/previous"
+    equal(result.previous_dir, previous, "first pass backup still reported")
+    equal(read(previous .. "/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.flac"), "old EXPO 100", "first pass backup kept")
+    assert_restored(w, result)
+end
+
+-- C: a stranded recovery copy survives any number of later successful runs.
+do
+    local w = world({ format2 = true })
+    write(audio_path(w, "EXPO_1", 100), "old EXPO 100")
+    write(audio_path(w, "EXPO_1", 100, "wav"), "old EXPO 100 wav")
+    local calls = 0
+    single._fs.rename = function(from, to)
+        calls = calls + 1
+        if calls == 3 or calls == 5 then return nil, "injected move failure" end
+        return real_fs.rename(from, to)
+    end
+    local plan = plan_of(w)
+    local region = find_region(plan, "EXPO_1").id
+    local stranded = string.rep("1", 32)
+    local result = render(w, request(w, plan, { scope = "region", region = region, run = stranded }))
+    single._fs.rename = real_fs.rename
+    assert(result.message:find("Rollback was incomplete", 1, true), result.message)
+    local work = w.dir .. "/.gphildeck-rerender/"
+    local copy = work .. stranded .. "/previous/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.flac"
+    equal(read(copy), "old EXPO 100", "only copy of the old flac is in previous/")
+    for i = 1, 4 do
+        result = render(w, request(w, plan_of(w), { scope = "region", region = region, run = string.rep("b", 31) .. i }))
+        equal(result.state, "completed", "later run " .. i .. ": " .. result.message)
+    end
+    equal(read(copy), "old EXPO 100", "recovery copy never pruned")
+    equal(manifest_text(w, stranded):find("done", 1, true), nil, "the failed run stays unmarked")
+    equal(read(work .. string.rep("b", 31) .. "1/previous/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.wav"), nil,
+        "finished runs beyond the newest two are still pruned")
+    equal(read(work .. string.rep("b", 31) .. "2/previous/AUDIO/EXPO_1/BEETHOVEN_3_1_EXPO_1_100.wav"), "new audio pass 2",
+        "newest finished runs kept")
+end
+
+-- D: a region outside the saved grid with the same output name excludes the saved row.
+do
+    local regions = {
+        { index = 0, pos = 0, rgnend = 16, name = "EXPO_1", number = 1, B_UISEL = 0 },
+        { index = 1, pos = 20, rgnend = 30, name = "DEV_2", number = 2, B_UISEL = 0 },
+        { index = 2, pos = 40, rgnend = 50, name = "CODA_3", number = 3, B_UISEL = 0 },
+        { index = 3, pos = 60, rgnend = 70, name = "expo_1", number = 4, B_UISEL = 0 }
+    }
+    local w = world({ regions = regions, blob = table.concat({
+        row_line(regions[1], 120, 100, 10, 120), row_line(regions[2], 100, 100, 5, 110),
+        row_line(regions[3], 120, 110, 10, 110) }, "\n") })
+    local plan = plan_of(w)
+    equal(plan.status, "ready", "unsaved twin plan")
+    local expo = find_region(plan, "EXPO_1")
+    equal(expo.targets, {}, "saved row sharing a name with an unsaved region is excluded")
+    assert(expo.note:find("same name", 1, true), "name note")
+    assert(table.concat(plan.issues, "\n"):find("named EXPO_1", 1, true), "name issue")
+    equal(find_region(plan, "DEV_2").targets, { "t100000000", "t105000000", "t110000000" }, "others unaffected")
+    assert(not find_tempo(plan, "t120000000"), "no tempo left only for the excluded region")
+    assert_consistent(plan, "unsaved twin")
+end
+
+-- E: target tempos at or below 0 BPM are left out and refused.
+do
+    local r = world().regions
+    local w = world({ blob = table.concat({ row_line(r[1], 120, -5, 5, 10), row_line(r[2], 100, 100, 5, 110) }, "\n") })
+    local plan = plan_of(w)
+    equal(plan.status, "ready", "non-positive plan")
+    local expo = find_region(plan, "EXPO_1")
+    equal(expo.targets, { "t5000000", "t10000000" }, "only tempos above 0 planned")
+    assert(expo.note:find("0 BPM", 1, true), "non-positive note")
+    assert(table.concat(plan.issues, "\n"):find("EXPO_1 has saved tempos at or below 0 BPM", 1, true), "non-positive issue")
+    assert(not find_tempo(plan, "t0") and not find_tempo(plan, "t-5000000"), "no non-positive tempo entries")
+    assert_consistent(plan, "non-positive")
+    for _, key in ipairs({ "t0", "t-5000000" }) do
+        local message = single.validate(w.api, request(w, plan, { scope = "region", region = expo.id, tempo = key }))
+        assert(message and message:find("greater than 0 BPM", 1, true), key .. ": " .. tostring(message))
+    end
+    equal(single.validate(w.api, request(w, plan, { scope = "region", region = expo.id, tempo = "t5000000" })), nil,
+        "positive tempo from the same row is valid")
+end
+
+-- F: tempos the multiplier merges into one pass share that pass's key.
+do
+    local r = world().regions
+    local w = world({ multiplier = 0.25, audio_check = false,
+        blob = table.concat({ row_line(r[1], 120, 100, 5, 100), row_line(r[3], 120, 100.000001, 5, 100.000001) }, "\n") })
+    local plan = plan_of(w)
+    equal(plan.status, "ready", "merged plan: " .. plan.message)
+    local expo, coda = find_region(plan, "EXPO_1"), find_region(plan, "CODA_3")
+    equal(#plan.tempos, 1, "one tempo")
+    equal(plan.tempos[1].key, "t100000000", "first-seen tempo key")
+    equal(plan.tempos[1].regions, { expo.id, coda.id }, "both regions at the merged tempo")
+    equal(plan.tempos[1].passes, 1, "one native pass, as the GFX script renders it")
+    equal(coda.targets, { "t100000000" }, "merged target uses the pass key")
+    assert(table.concat(plan.issues, "\n"):find("100.000001 is rendered as 100", 1, true), "merge issue")
+    assert_consistent(plan, "merged")
+    local result = render(w, request(w, plan))
+    equal(result.state, "completed", "merged render: " .. result.message)
+    equal(#w.passes, 1, "one pass rendered")
+    equal(w.passes[1].selected, { "EXPO_1", "CODA_3" }, "both regions in the pass")
+    assert_restored(w, result)
+end
+
+-- G: a render setting that does not come back makes restored false and is named.
+do
+    local w = world({ audio_check = false, ignore_set = function(w, key, value)
+        return key == "RENDER_FILE" and value == w.original.strings.RENDER_FILE
+    end })
+    local plan = plan_of(w)
+    local result = render(w, request(w, plan, { scope = "region", region = find_region(plan, "DEV_2").id }))
+    equal(result.state, "completed", "render itself completed")
+    equal(result.restored, false, "restored is false")
+    equal(result.restore_errors, { "render settings: RENDER_FILE did not return to its original value." },
+        "restore error names the setting")
+end
+
+-- H: every track named like a click track is muted for music passes, then restored.
+do
+    local seen = {}
+    local w = world({ audio_check = false, extra_tracks = {
+        { name = "CLICK TRACK", B_MUTE = 0, selected = false },
+        { name = "click-track (old)", B_MUTE = 1, selected = false },
+        { name = "Clicks", B_MUTE = 0, selected = false }
+    }, on_render = function(w)
+        seen = { w.tracks[2].B_MUTE, w.tracks[4].B_MUTE, w.tracks[5].B_MUTE, w.tracks[6].B_MUTE }
+    end })
+    local plan = plan_of(w)
+    local result = render(w, request(w, plan, { scope = "region", region = find_region(plan, "DEV_2").id }))
+    equal(result.state, "completed", "click mute render")
+    equal(seen, { 1, 1, 1, 0 }, "CLICKTRACK, CLICK TRACK and click-track muted; Clicks not")
     assert_restored(w, result)
 end
 

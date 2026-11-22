@@ -225,6 +225,15 @@ function M.with_tempo_suffix(pattern, tempo_str)
     return pattern .. "_" .. tempo_str
 end
 
+-- Key of one music pass: same base and same target (actual BPM), same file suffix.
+function M.music_group_key(base_actual, target_actual, tempo_display)
+    return table.concat({
+        M.numeric_group_key(base_actual),
+        M.numeric_group_key(target_actual),
+        tempo_display
+    }, "|")
+end
+
 local function add_region_to_group(group, cfg, row_index)
     group.regions[#group.regions + 1] = cfg
     group.row_indexes[#group.row_indexes + 1] = row_index
@@ -272,11 +281,7 @@ function M.build_per_region_queue_groups(configs, tempo_multiplier)
                 local target_actual = target_tempo * tempo_multiplier
                 local factor = target_actual / base_actual
                 local tempo_display = tempo_suffix_value(target_tempo)
-                local regular_key = table.concat({
-                    numeric_group_key(base_actual),
-                    numeric_group_key(target_actual),
-                    tempo_display
-                }, "|")
+                local regular_key = M.music_group_key(base_actual, target_actual, tempo_display)
                 local regular_group = regular_by_key[regular_key]
                 if not regular_group then
                     regular_group = {
