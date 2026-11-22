@@ -76,6 +76,7 @@ do
         ["0003"] = "created\t1004\nprevious\tAUDIO/X/b.flac\ndone\t1104\n",                       -- marked
         ["0004"] = "created\t1005\nprevious\tAUDIO/X/b.flac\ndiscardable\t1105\n"                 -- marked
     }
+    write(w.dir .. "/AUDIO/X/b.flac", "current b")
     for name, text in pairs(manifests) do
         write(work .. name .. "/manifest.txt", text)
         write(work .. name .. "/previous/AUDIO/X/b.flac", "b " .. name)
@@ -176,16 +177,15 @@ do
     assert_restored(w, result)
 end
 
--- 3: output names collide case-insensitively, including accented letters.
+-- 3: output names collide ignoring case and accents.
 do
-    local fold = single._fold_case
+    local fold = single._output_name
     equal(fold("Étude"), fold("étude"), "Latin-1 fold")
     equal(fold("ŁÓDŹ ŒUVRE Ÿ"), fold("łódź œuvre ÿ"), "Latin Extended-A fold")
     equal(fold("ΣΟΦΊΑ"), fold("σοφία"), "Greek fold")
     equal(fold("ΣΟΦΟΣ"), fold("σοφος"), "final sigma fold")
     equal(fold("МОСКВА ЁЖ"), fold("москва ёж"), "Cyrillic fold")
     equal(fold("A×B"), "a×b", "multiplication sign is not a letter")
-    equal(fold("X\255\128É\195"), "x\255\128é\195", "invalid UTF-8 bytes kept as they are")
     assert(fold("Straße") ~= fold("STRASSE"), "no multi-letter folding needed")
 
     local regions = {
@@ -205,6 +205,61 @@ do
     end
     equal(find_region(plan, "CODA_3").targets, { "t110000000" }, "other regions still planned")
     assert(find(plan.issues, "Regions named Étude share an output name; they were left out."), "collision reported")
+end
+
+-- 3b: decomposed accents name the same file on macOS; uncomparable names stop every region.
+do
+    local key = single._output_name
+    equal(#single._LATIN_BASE, 0x180 - 0xC0, "one base letter per code point")
+    equal(key("\195\137tude"), key("E\204\129tude"), "precomposed and decomposed acute")
+    equal(key("\208\153\208\129"), key("\208\152\204\134\208\149\204\136"), "Cyrillic short i and io")
+    equal(key("\206\134"), key("\206\177\204\129"), "Greek alpha with tonos")
+    equal(key("\196\176"), key("I\204\135"), "capital I with dot above")
+    equal(key("EXPO_1 \226\128\147 Allegro"), "expo_1 \226\128\147 allegro", "en dash kept")
+    assert(key("\195\152") ~= key("O"), "letters without a decomposition are kept")
+    equal(key("\225\186\160"), nil, "Vietnamese precomposed letter cannot be compared")
+    equal(key("\226\132\170"), nil, "Kelvin sign cannot be compared")
+    equal(key("X\255"), nil, "invalid UTF-8 cannot be compared")
+
+    local regions = {
+        { index = 0, pos = 0, rgnend = 16, name = "\195\137tude", number = 1, B_UISEL = 0 },
+        { index = 1, pos = 20, rgnend = 30, name = "E\204\129tude", number = 2, B_UISEL = 0 },
+        { index = 2, pos = 40, rgnend = 50, name = "CODA_3", number = 3, B_UISEL = 0 }
+    }
+    local blob = table.concat({ row_line(regions[1], 120, 100, 10, 120), row_line(regions[2], 100, 100, 5, 110),
+        row_line(regions[3], 120, 110, 10, 110) }, "\n")
+    local plan = plan_of(world({ regions = regions, blob = blob }))
+    assert_consistent(plan, "decomposed collision plan")
+    equal({ #find_region(plan, regions[1].name).targets, #find_region(plan, regions[2].name).targets }, { 0, 0 },
+        "both spellings left out")
+    equal(find_region(plan, "CODA_3").targets, { "t110000000" }, "other regions still planned")
+
+    regions[2].name = "A\225\186\160" -- one uncomparable name, not in the saved plan's collision
+    plan = plan_of(world({ regions = regions, blob = blob }))
+    assert_consistent(plan, "uncomparable name plan")
+    for _, region in ipairs(plan.regions) do equal(region.targets, {}, region.name .. " left out") end
+    assert(find(plan.issues, "Region A\225\186\160 has a name with characters GPhilDeck cannot compare "
+        .. "with other region names, so no region is re-rendered from GPhilDeck. Rename it, or use the Tempo Set window."),
+        "uncomparable name reported")
+end
+
+-- 3c: a marked run is kept when an output it replaced has gone missing.
+do
+    local w = world({ audio_check = false })
+    local work = work_of(w)
+    for i, name in ipairs({ "0000", "0001", "0002" }) do
+        write(work .. name .. "/manifest.txt", "created\t" .. (1000 + i) .. "\nprevious\tAUDIO/X/b" .. i
+            .. ".flac\ndone\t" .. (1100 + i) .. "\n")
+        write(work .. name .. "/previous/AUDIO/X/b" .. i .. ".flac", "b " .. name)
+    end
+    write(w.dir .. "/AUDIO/X/b2.flac", "current b2") -- only 0001's output is still in place
+    for i = 1, 3 do
+        local result = render(w, region_request(w, plan_of(w), "EXPO_1", string.rep("c", 31) .. i))
+        equal(result.state, "completed", "later run " .. i)
+    end
+    equal(read(work .. "0000/previous/AUDIO/X/b1.flac"), "b 0000", "sole copy kept: output missing")
+    equal(read(work .. "0002/previous/AUDIO/X/b3.flac"), "b 0002", "sole copy kept: output missing (newest)")
+    equal(read(work .. "0001/previous/AUDIO/X/b2.flac"), nil, "run with its output in place pruned")
 end
 
 single._fs.time = real_fs.time

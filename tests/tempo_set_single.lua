@@ -393,6 +393,7 @@ do
         write(work .. name .. "/stage/AUDIO/X/a.flac", "a")
         write(work .. name .. "/previous/AUDIO/X/b.flac", "b")
     end
+    write(w.dir .. "/AUDIO/X/b.flac", "current b") -- the replaced output is still in place
     write(work .. "0001/previous/AUDIO/X/user.flac", "not ours")
     write(work .. "notes/keep.txt", "unrelated")
     local plan = plan_of(w)

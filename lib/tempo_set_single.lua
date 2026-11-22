@@ -114,20 +114,48 @@ local function fold_code(c)
     return c
 end
 
--- Folds case in UTF-8 text; bytes that are not valid UTF-8 are kept as they are.
-local function fold_case(text)
-    return (text:gsub(utf8.charpattern, function(piece)
-        if utf8.len(piece) ~= 1 then return piece:lower() end
-        return utf8.char(fold_code(utf8.codepoint(piece)))
-    end))
-end
-M._fold_case = fold_case
+-- Base letters (after folding) for accented letters U+00C0..U+017F; "." keeps the letter.
+local LATIN_BASE = "aaaaaa.ceeeeiiii.nooooo..uuuuy..aaaaaa.ceeeeiiii.nooooo..uuuuy.y"
+    .. "aaaaaaccccccccdd..eeeeeeeeeegggg" .. "gggghh..iiiiiiiii...jjkk.llllll."
+    .. "...nnnnnn...oooooo..rrrrrrssssss" .. "sstttt..uuuuuuuuuuuuwwyyyzzzzzz."
+local OTHER_BASE = {
+    [0x387] = 0xB7, [0x390] = 0x3B9, [0x3AC] = 0x3B1, [0x3AD] = 0x3B5, [0x3AE] = 0x3B7, [0x3AF] = 0x3B9,
+    [0x3B0] = 0x3C5, [0x3CA] = 0x3B9, [0x3CB] = 0x3C5, [0x3CC] = 0x3BF, [0x3CD] = 0x3C5, [0x3CE] = 0x3C9,
+    [0x439] = 0x438, [0x450] = 0x435, [0x451] = 0x435, [0x453] = 0x433, [0x457] = 0x456,
+    [0x45C] = 0x43A, [0x45D] = 0x438, [0x45E] = 0x443
+}
+M._LATIN_BASE = LATIN_BASE
 
--- Output file names come from $region and may land on a case-insensitive volume
--- (macOS): compare names as stored, ignoring case, including accented letters.
-local function output_name(name)
-    return fold_case(plan_lib.sanitize_name_for_storage(name))
+-- Code points whose every spelling this file can compare: none of them has a
+-- canonical decomposition beyond the ones mapped above.
+local function comparable(c)
+    return c < 0x180 or (c >= 0x300 and c <= 0x36F) or (c >= 0x386 and c <= 0x3CE) or (c >= 0x400 and c <= 0x45F)
+        or (c >= 0x2010 and c <= 0x2027) or (c >= 0x4E00 and c <= 0x9FFF) or (c >= 0xFE00 and c <= 0xFE0F)
+        or (c >= 0x1F300 and c <= 0x1FAFF)
 end
+
+-- Output file names come from $region and land on macOS volumes that ignore
+-- case and treat "É" and "E" + combining accent as the same name. The key folds
+-- case, drops accents (so it may join names the volume keeps apart, which only
+-- leaves both out) and is nil when the name has characters it cannot compare.
+local function output_name(name)
+    local text = plan_lib.sanitize_name_for_storage(name)
+    if not utf8.len(text) then return nil end
+    local out = {}
+    for _, c in utf8.codes(text) do
+        if not comparable(c) then return nil end
+        if c < 0x300 or c > 0x36F then -- combining accents are dropped
+            c = fold_code(c)
+            if c >= 0xC0 and c <= 0x17F then
+                local base = LATIN_BASE:sub(c - 0xBF, c - 0xBF)
+                if base ~= "." then c = base:byte() end
+            end
+            out[#out + 1] = utf8.char(OTHER_BASE[c] or c)
+        end
+    end
+    return table.concat(out)
+end
+M._output_name = output_name
 
 -- A tempo with up to six decimals and no trailing zeros, e.g. "100.000001".
 local function bpm_text(tempo)
@@ -293,10 +321,20 @@ local function build(api)
     end
 
     -- $region names the output files, so count every current region, saved or not.
-    local name_count = {}
+    -- One name that cannot be compared could share a file with any other name.
+    local name_count, uncomparable = {}, nil
     for _, region in ipairs(regions) do
         local name = output_name(region.name)
-        name_count[name] = (name_count[name] or 0) + 1
+        if name then
+            name_count[name] = (name_count[name] or 0) + 1
+        else
+            uncomparable = uncomparable or region.name
+        end
+    end
+    if uncomparable then
+        plan.issues[#plan.issues + 1] = string.format("Region %s has a name with characters GPhilDeck cannot compare "
+            .. "with other region names, so no region is re-rendered from GPhilDeck. Rename it, or use the Tempo Set window.",
+            uncomparable)
     end
 
     local revision_parts = {
@@ -337,6 +375,9 @@ local function build(api)
             usable = false
             notes[#notes + 1] = "Not planned: " .. reason .. "."
             plan.issues[#plan.issues + 1] = string.format("Region %s has invalid saved settings (%s); it was left out.", row.name, reason)
+        elseif uncomparable then
+            usable = false
+            notes[#notes + 1] = "Not planned: region " .. uncomparable .. " has a name GPhilDeck cannot compare safely."
         elseif name_count[output_name(row.name)] > 1 then
             usable = false
             notes[#notes + 1] = "Another region has the same name, so their output files would collide."

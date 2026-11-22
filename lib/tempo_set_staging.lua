@@ -168,11 +168,22 @@ function M.new(fs)
         return last and (last:match("^(done)\t%d+$") or last:match("^(discardable)\t%d+$")) or nil
     end
 
+    -- True when every file the run backed up still has a file at its output path;
+    -- otherwise the backup in previous/ may be the only copy left.
+    local function outputs_present(api, root, text)
+        for kind, rel in text:gmatch("(%a+)\t([^\n]+)") do
+            if kind == "previous" and not api.file_exists(root .. "/" .. rel) then return false end
+        end
+        return true
+    end
+
     -- Keeps the newest `keep` other marked runs; deletes only manifest-listed files.
     -- Unmarked runs (interrupted, rollback incomplete, stopped with a backup left
     -- in previous/, a line after the marker, or made before markers existed) may
-    -- hold the only copy of an old output, so they are never pruned.
+    -- hold the only copy of an old output, so they are never pruned. Nor is a
+    -- marked run whose replaced output has since gone missing.
     function S.prune(api, work, current_run, keep)
+        local root = parent(slash(work)) or work
         local runs = {}
         for _, name in ipairs(list_subdirectories(api, work)) do
             if name ~= current_run and name:match("^%x+$") then
@@ -181,7 +192,7 @@ function M.new(fs)
                 if file then
                     local text = file:read("a") or ""
                     file:close()
-                    if S.marker(text) then
+                    if S.marker(text) and outputs_present(api, root, text) then
                         runs[#runs + 1] = { name = name, manifest = manifest, text = text,
                             created = tonumber(text:match("^created\t(%d+)")) or 0 }
                     end
