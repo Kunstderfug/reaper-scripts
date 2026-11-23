@@ -186,7 +186,9 @@ do
     equal(fold("ΣΟΦΟΣ"), fold("σοφος"), "final sigma fold")
     equal(fold("МОСКВА ЁЖ"), fold("москва ёж"), "Cyrillic fold")
     equal(fold("A×B"), "a×b", "multiplication sign is not a letter")
-    assert(fold("Straße") ~= fold("STRASSE"), "no multi-letter folding needed")
+    equal(fold("Straße"), fold("STRASSE"), "sharp s folds to ss")
+    equal(fold("\194\181s"), fold("\206\188S"), "micro sign folds to Greek mu")
+    equal(fold("\206\177\205\133"), fold("\206\177\206\185"), "Greek ypogegrammeni folds to iota")
 
     local regions = {
         { index = 0, pos = 0, rgnend = 16, name = "Étude", number = 1, B_UISEL = 0 },
@@ -260,6 +262,18 @@ do
     equal(read(work .. "0000/previous/AUDIO/X/b1.flac"), "b 0000", "sole copy kept: output missing")
     equal(read(work .. "0002/previous/AUDIO/X/b3.flac"), "b 0002", "sole copy kept: output missing (newest)")
     equal(read(work .. "0001/previous/AUDIO/X/b2.flac"), nil, "run with its output in place pruned")
+end
+
+-- 3d: outputs whose path steps out of the render folder are refused.
+do
+    local S = dofile("lib/tempo_set_staging.lua").new({})
+    local base = "/r/X"
+    equal(S.relative(base, { base .. "/AUDIO/a.flac", base .. "/Intro.../b.flac" }, ".w"),
+        { "AUDIO/a.flac", "Intro.../b.flac" }, "dots inside a name are fine")
+    for _, target in ipairs({ base .. "/AUDIO/../../c.flac", base .. "/../c.flac", base .. "/a/.." }) do
+        local rels, message = S.relative(base, { target }, ".w")
+        assert(rels == nil and message:find("steps out", 1, true), target .. ": " .. tostring(message))
+    end
 end
 
 single._fs.time = real_fs.time

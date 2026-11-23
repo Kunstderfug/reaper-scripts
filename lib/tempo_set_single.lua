@@ -124,6 +124,8 @@ local OTHER_BASE = {
     [0x439] = 0x438, [0x450] = 0x435, [0x451] = 0x435, [0x453] = 0x433, [0x457] = 0x456,
     [0x45C] = 0x43A, [0x45D] = 0x438, [0x45E] = 0x443
 }
+-- Case folds that change a letter's script or length (macOS folds them too).
+local SPECIAL_FOLD = { [0xDF] = "ss", [0xB5] = utf8.char(0x3BC), [0x345] = utf8.char(0x3B9) }
 M._LATIN_BASE = LATIN_BASE
 
 -- Code points whose every spelling this file can compare: none of them has a
@@ -144,7 +146,9 @@ local function output_name(name)
     local out = {}
     for _, c in utf8.codes(text) do
         if not comparable(c) then return nil end
-        if c < 0x300 or c > 0x36F then -- combining accents are dropped
+        if SPECIAL_FOLD[c] then
+            out[#out + 1] = SPECIAL_FOLD[c]
+        elseif c < 0x300 or c > 0x36F then -- other combining accents are dropped
             c = fold_code(c)
             if c >= 0xC0 and c <= 0x17F then
                 local base = LATIN_BASE:sub(c - 0xBF, c - 0xBF)

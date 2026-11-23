@@ -38,6 +38,9 @@ function M.new(fs)
                 return nil, "A render output is outside the render folder: " .. target
             end
             local rel = normalized:sub(#prefix + 1)
+            if ("/" .. rel .. "/"):find("/%.%./") then
+                return nil, "A render output path steps out of its folder: " .. target
+            end
             if rel == "" or seen[rel] or rel:sub(1, #reserved) == reserved then
                 return nil, "Render outputs are not unique: " .. target
             end
